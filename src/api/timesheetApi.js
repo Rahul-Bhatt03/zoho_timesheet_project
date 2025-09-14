@@ -2,8 +2,8 @@ import axios from 'axios'
 
 // Create axios instance with default config
 const apiClient = axios.create({
-  baseURL: import.meta.env.VITE_API_URL ||'/api/timesheet',
-  timeout: 30000, // 30 seconds timeout
+  baseURL: import.meta.env.VITE_API_URL || '/api/timesheet',
+  timeout: 60000, // Increased to 60 seconds for large files
   headers: {
     'Content-Type': 'application/json'
   }
@@ -12,7 +12,7 @@ const apiClient = axios.create({
 // Request interceptor
 apiClient.interceptors.request.use(
   (config) => {
-    // Add any auth headers or other request modifications here
+    console.log('Making request to:', config.baseURL + config.url);
     return config
   },
   (error) => {
@@ -23,16 +23,20 @@ apiClient.interceptors.request.use(
 // Response interceptor
 apiClient.interceptors.response.use(
   (response) => {
+    // Don't parse blob responses
+    if (response.config.responseType === 'blob') {
+      return response;
+    }
     return response.data
   },
   (error) => {
-    // Handle common error scenarios
+    console.error('API Error:', error);
+    
     if (error.code === 'ECONNABORTED') {
       console.error('Request timeout')
     }
     
     if (error.response?.status === 401) {
-      // Handle unauthorized access
       console.error('Unauthorized access')
     }
     
@@ -47,8 +51,6 @@ apiClient.interceptors.response.use(
 export const timesheetApi = {
   /**
    * Upload timesheet file
-   * @param {File} file - The timesheet file to upload
-   * @returns {Promise<Object>} Response with processed data
    */
   async uploadTimesheet(file) {
     const formData = new FormData()
@@ -67,7 +69,6 @@ export const timesheetApi = {
 
   /**
    * Get existing timesheet data
-   * @returns {Promise<Object>} Existing timesheet data
    */
   async getTimesheetData() {
     return await apiClient.get('/data')
@@ -75,28 +76,48 @@ export const timesheetApi = {
 
   /**
    * Get formula configurations
-   * @returns {Promise<Object>} Formula configurations
    */
   async getFormulas() {
     return await apiClient.get('/formulas')
   },
 
   /**
-   * Download processed Excel file
-   * @returns {Promise<Blob>} Excel file as blob
+   * Download processed Excel file - FIXED VERSION
    */
-  async downloadProcessedFile() {
-    const response = await axios.get('/api/timesheet/download', {
-      responseType: 'blob',
-      timeout: 60000 // Increase timeout for file downloads
-    })
+/**
+ * Download processed Excel file - Updated for new backend response
+ */
+async downloadProcessedFile() {
+  try {
+    console.log('Starting download request...');
+    console.log('Request URL:', apiClient.defaults.baseURL + '/download');
     
-    return response.data
-  },
+    const response = await apiClient.get('/download', {
+      // Remove responseType: 'blob' since we're now getting JSON
+      headers: {
+        'Accept': 'application/json'
+      },
+      timeout: 60000
+    });
+
+    console.log('Download response received:', response);
+
+    // Check if the response is successful
+    if (!response.success) {
+      throw new Error(response.message || 'Failed to generate Excel file');
+    }
+
+    // Return the response data which contains file info
+    return response.data;
+      
+  } catch (error) {
+    console.error('Download error details:', error);
+    throw error;
+  }
+},
 
   /**
    * Clear all timesheet data
-   * @returns {Promise<Object>} Success/error response
    */
   async clearTimesheetData() {
     return await apiClient.delete('/clear')
@@ -104,8 +125,6 @@ export const timesheetApi = {
 
   /**
    * Update formula configuration
-   * @param {Object} formulas - Formula configurations
-   * @returns {Promise<Object>} Success/error response
    */
   async updateFormulas(formulas) {
     return await apiClient.put('/formulas', { formulas })
@@ -113,8 +132,6 @@ export const timesheetApi = {
 
   /**
    * Get timesheet data with filters
-   * @param {Object} filters - Filter parameters
-   * @returns {Promise<Object>} Filtered timesheet data
    */
   async getFilteredData(filters = {}) {
     const params = new URLSearchParams()
@@ -130,9 +147,6 @@ export const timesheetApi = {
 
   /**
    * Export data in different formats
-   * @param {string} format - Export format (csv, excel, json)
-   * @param {Object} options - Export options
-   * @returns {Promise<Blob>} Exported file as blob
    */
   async exportData(format = 'excel', options = {}) {
     const response = await axios.post('/api/timesheet/export', 
@@ -148,8 +162,6 @@ export const timesheetApi = {
 
   /**
    * Get analytics data
-   * @param {Object} dateRange - Date range for analytics
-   * @returns {Promise<Object>} Analytics data
    */
   async getAnalytics(dateRange = {}) {
     return await apiClient.post('/analytics', dateRange)
@@ -157,8 +169,6 @@ export const timesheetApi = {
 
   /**
    * Validate timesheet file before upload
-   * @param {File} file - The file to validate
-   * @returns {Promise<Object>} Validation result
    */
   async validateTimesheetFile(file) {
     const formData = new FormData()
@@ -173,8 +183,6 @@ export const timesheetApi = {
 
   /**
    * Get upload history
-   * @param {number} limit - Number of records to fetch
-   * @returns {Promise<Object>} Upload history
    */
   async getUploadHistory(limit = 10) {
     return await apiClient.get(`/history?limit=${limit}`)
@@ -182,8 +190,6 @@ export const timesheetApi = {
 
   /**
    * Delete specific timesheet entry
-   * @param {string|number} entryId - Entry ID to delete
-   * @returns {Promise<Object>} Success/error response
    */
   async deleteEntry(entryId) {
     return await apiClient.delete(`/entry/${entryId}`)
@@ -191,9 +197,6 @@ export const timesheetApi = {
 
   /**
    * Update specific timesheet entry
-   * @param {string|number} entryId - Entry ID to update
-   * @param {Object} entryData - Updated entry data
-   * @returns {Promise<Object>} Updated entry data
    */
   async updateEntry(entryId, entryData) {
     return await apiClient.put(`/entry/${entryId}`, entryData)

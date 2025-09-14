@@ -139,40 +139,63 @@ export const useTimesheetStore = defineStore('timesheet', {
       }
     },
 
-    // Download processed file
-    async downloadProcessedFile() {
-      if (!this.hasData) {
-        this.setMessage('No data available to download', 'error')
-        return { success: false, message: 'No data available' }
-      }
+// Fixed downloadProcessedFile method in our store
+// Updated downloadProcessedFile method for JSON response
+async downloadProcessedFile() {
+  if (!this.hasData) {
+    this.setMessage('No data available to download', 'error')
+    return { success: false, message: 'No data available' }
+  }
 
-      this.loading.downloading = true
+  this.loading.downloading = true
 
-      try {
-        const blob = await timesheetApi.downloadProcessedFile()
-        
-        // Create download link
-        const url = window.URL.createObjectURL(blob)
-        const link = document.createElement('a')
-        link.href = url
-        link.setAttribute('download', `processed_timesheet_${new Date().toISOString().split('T')[0]}.xlsx`)
-        document.body.appendChild(link)
-        link.click()
-        link.remove()
-        window.URL.revokeObjectURL(url)
-        
-        this.setMessage('File downloaded successfully', 'success')
-        return { success: true, message: 'File downloaded successfully' }
-      } catch (error) {
-        const errorMessage = 'Error downloading file'
-        this.setMessage(errorMessage, 'error')
-        return { success: false, message: errorMessage }
-      } finally {
-        this.loading.downloading = false
-      }
-    },
+  try {
+    console.log('Starting download process...');
+    
+    // Get file info from API (now returns JSON with file details)
+    const fileInfo = await timesheetApi.downloadProcessedFile();
+    
+    console.log('Received file info:', fileInfo);
 
-    // Clear all data
+    if (!fileInfo.download_url) {
+      throw new Error('No download URL provided');
+    }
+
+    // Option 1: Open in new window for download
+    window.open(fileInfo.download_url, '_blank');
+
+    // Option 2: Create invisible download link (alternative approach)
+    /*
+    const link = document.createElement('a');
+    link.href = fileInfo.download_url;
+    link.download = fileInfo.filename;
+    link.target = '_blank';
+    link.style.display = 'none';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    */
+
+    this.setMessage(`File generated successfully: ${fileInfo.filename}. Check your downloads folder.`, 'success');
+    
+    return { 
+      success: true, 
+      message: 'File downloaded successfully',
+      fileInfo: fileInfo
+    };
+    
+  } catch (error) {
+    console.error('Download error:', error);
+    
+    const errorMessage = error.message || 'Error downloading file';
+    this.setMessage(errorMessage, 'error');
+    return { success: false, message: errorMessage };
+    
+  } finally {
+    this.loading.downloading = false;
+  }
+},
+   // Clear all data
     async clearAllData() {
       this.loading.clearing = true
 
