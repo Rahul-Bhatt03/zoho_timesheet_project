@@ -14,7 +14,7 @@ class ZohoTimesheetImport implements ToCollection, WithStartRow
     protected $teamName;
     
     protected array $fieldMappings = [
-        'item_id'              => ['itemid', 'id', 'item_id'],
+        'item_id'              => ['item_id'],
         'item_name'            => ['itemname', 'name', 'title', 'item_name'],
         'item_detail'          => ['meetingtitle', 'itemdetail', 'detail', 'description', 'cts', 'meeting_title'],
         'log_type'             => ['logtype', 'type', 'log_type'],
@@ -26,6 +26,7 @@ class ZohoTimesheetImport implements ToCollection, WithStartRow
         'log_date'             => ['logdate', 'date', 'log_date'],
         'billing_status'       => ['billingstatus', 'billing', 'billing_status'],
         'approval_status'      => ['approvalstatus', 'approval', 'approval_status'],
+        'descriptions' => ['descriptions', 'description', 'remarks'],
         'remarks'              => ['description', 'remarks', 'notes', 'comment', 'descriptions'],
         'sprint'               => ['sprint'],
         'status'               => ['status'],
@@ -33,12 +34,13 @@ class ZohoTimesheetImport implements ToCollection, WithStartRow
         'estimated_points'     => ['estimationpoints', 'estimated', 'points', 'estimation_points'],
         'actual_points'        => ['actualpoints', 'actual', 'actual_points'],
         'requested_date'       => ['requesteddate', 'requested', 'requested_date'],
-        'start_date'           => ['startdate', 'start', 'start_date'],
-        'release_date'         => ['completedon', 'completed', 'release', 'releasedate', 'release_completed_on', 'end_date', 'completed_on'],
-        'expected_start_date'  => ['expectedstartdate', 'expected_start_date'],
-        'expected_release_date' => ['expectedreleasedate', 'expected_release_date'],
+        'start_date'           => ['startdate', 'start_date'],
+        'release_date'         => [ 'end_date'],
+        'expected_start_date'  => ['startdate','expectedstartdate', 'expected_start_date'],
+        'expected_release_date' => ['end_date','expectedreleasedate', 'expected_release_date'],
         'actual_start_date'    => ['actualstartdate', 'actual_start_date', 'start_date'], // Use start_date as fallback
         'actual_release_date'  => ['actualreleasedate', 'actual_release_date', 'completed_on'], // Use completed_on as fallback
+        'completed_on'         => ['completedon', 'completed_on'],
         'created_on'           => ['createdon', 'created_on'],
         'created_by'           => ['createdby', 'created_by'],
         'updated_by'           => ['updatedby', 'updated_by'],
@@ -209,44 +211,61 @@ class ZohoTimesheetImport implements ToCollection, WithStartRow
         return $mapped;
     }
 
-    private function handleSpecialMappings(array &$mapped, array $normalizedRow, array &$mappingLog): void
-    {
-        // If application is missing, use project_name
-        if (!$mapped['application'] && $mapped['project_name']) {
-            $mapped['application'] = $mapped['project_name'];
-            $mappingLog[] = "application <- project_name (fallback) = '{$mapped['application']}'";
-        }
+ private function handleSpecialMappings(array &$mapped, array $normalizedRow, array &$mappingLog): void
+{
+    // If application is missing, use project_name
+    if (empty($mapped['application']) && !empty($mapped['project_name'])) {
+        $mapped['application'] = $mapped['project_name'];
+        $mappingLog[] = "application <- project_name (fallback) = '{$mapped['application']}'";
+    }
 
-        // If team_name is missing, use log_owner
-        if (!$mapped['team_name'] && $mapped['log_owner']) {
-            $mapped['team_name'] = $mapped['log_owner'];
-            $mappingLog[] = "team_name <- log_owner (fallback) = '{$mapped['team_name']}'";
-        }
+    // If team_name is missing, use log_owner
+    if (empty($mapped['team_name']) && !empty($mapped['log_owner'])) {
+        $mapped['team_name'] = $mapped['log_owner'];
+        $mappingLog[] = "team_name <- log_owner (fallback) = '{$mapped['team_name']}'";
+    }
 
-        // If actual_points is missing, use calculated log_hours_decimal
-        if (!$mapped['actual_points'] && $mapped['log_hours_decimal']) {
-            $mapped['actual_points'] = $mapped['log_hours_decimal'];
-            $mappingLog[] = "actual_points <- log_hours_decimal (fallback) = '{$mapped['actual_points']}'";
-        }
+    // If actual_points is missing, use calculated log_hours_decimal
+    if (empty($mapped['actual_points']) && !empty($mapped['log_hours_decimal'])) {
+        $mapped['actual_points'] = $mapped['log_hours_decimal'];
+        $mappingLog[] = "actual_points <- log_hours_decimal (fallback) = '{$mapped['actual_points']}'";
+    }
 
-        // If actual_start_date is missing, use start_date
-        if (!$mapped['actual_start_date'] && $mapped['start_date']) {
-            $mapped['actual_start_date'] = $mapped['start_date'];
-            $mappingLog[] = "actual_start_date <- start_date (fallback) = '{$mapped['actual_start_date']}'";
-        }
+    // If expected_start_date is missing, use start_date (if available)
+    if (empty($mapped['expected_start_date']) && !empty($mapped['start_date'])) {
+        $mapped['expected_start_date'] = $mapped['start_date'];
+        $mappingLog[] = "expected_start_date <- start_date (fallback) = '{$mapped['expected_start_date']}'";
+    }
 
-        // If actual_release_date is missing, use release_date
-        if (!$mapped['actual_release_date'] && $mapped['release_date']) {
+    // If expected_release_date is missing, use release_date (if available)
+    if (empty($mapped['expected_release_date']) && !empty($mapped['release_date'])) {
+        $mapped['expected_release_date'] = $mapped['release_date'];
+        $mappingLog[] = "expected_release_date <- release_date (fallback) = '{$mapped['expected_release_date']}'";
+    }
+
+    // If actual_start_date is missing, use start_date (if available)
+    if (empty($mapped['actual_start_date']) && !empty($mapped['start_date'])) {
+        $mapped['actual_start_date'] = $mapped['start_date'];
+        $mappingLog[] = "actual_start_date <- start_date (fallback) = '{$mapped['actual_start_date']}'";
+    }
+
+    // If actual_release_date is missing, use completed_on or release_date (if available)
+    if (empty($mapped['actual_release_date'])) {
+        if (!empty($mapped['completed_on'])) {
+            $mapped['actual_release_date'] = $mapped['completed_on'];
+            $mappingLog[] = "actual_release_date <- completed_on (fallback) = '{$mapped['actual_release_date']}'";
+        } elseif (!empty($mapped['release_date'])) {
             $mapped['actual_release_date'] = $mapped['release_date'];
             $mappingLog[] = "actual_release_date <- release_date (fallback) = '{$mapped['actual_release_date']}'";
         }
-
-        // Generate zoho_link if missing
-        if (!$mapped['zoho_link'] && $mapped['item_id'] && $mapped['project_name']) {
-            $mapped['zoho_link'] = "https://projects.zoho.com/" . strtolower($mapped['project_name']) . "/item/" . $mapped['item_id'];
-            $mappingLog[] = "zoho_link <- generated = '{$mapped['zoho_link']}'";
-        }
     }
+
+    // Generate zoho_link if missing
+    if (empty($mapped['zoho_link']) && !empty($mapped['item_id']) && !empty($mapped['project_name'])) {
+        $mapped['zoho_link'] = "https://projects.zoho.com/" . strtolower($mapped['project_name']) . "/item/" . $mapped['item_id'];
+        $mappingLog[] = "zoho_link <- generated = '{$mapped['zoho_link']}'";
+    }
+}
 
     private function processDateFields(array &$mapped, int $rowIndex): void
     {
@@ -254,7 +273,7 @@ class ZohoTimesheetImport implements ToCollection, WithStartRow
             'log_date', 'requested_date', 'start_date', 'release_date',
             'expected_start_date', 'expected_release_date', 
             'actual_start_date', 'actual_release_date',
-            'created_on', 'last_modified'
+            'created_on', 'last_modified','completed_on'
         ];
         
         foreach ($dateFields as $field) {

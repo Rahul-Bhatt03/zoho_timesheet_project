@@ -11,10 +11,10 @@ class TimesheetCalculatorService
     {
         return [
             'lead_time' => $this->calculateLeadTime($entry),
-            'cycle_time' => $this->calculateCycleTime($entry), 
+            'cycle_time' => $this->calculateCycleTime($entry),
             'defects_density' => $this->calculateDefectsDensity($entry),
-            'weekly_points' => $this->calculateWeeklyPoints($entry),
-            'story_point_accuracy' => $this->calculateStoryPointAccuracy($entry),
+            'weekly_points' => $this->calculateWeeklyPoints(collect([$entry])),
+            'story_point_accuracy' => $this->calculateStoryPointAccuracy(collect([$entry])),
             'release_delay' => $this->calculateReleaseDelay($entry)
         ];
     }
@@ -26,7 +26,7 @@ class TimesheetCalculatorService
     {
         $requestedDate = $this->parseDate($entry->requested_date);
         $releaseDate = $this->parseDate($entry->actual_release_date ?? $entry->release_date);
-        
+
         if (!$requestedDate || !$releaseDate) {
             return 0;
         }
@@ -41,7 +41,7 @@ class TimesheetCalculatorService
     {
         $startDate = $this->parseDate($entry->actual_start_date ?? $entry->start_date);
         $releaseDate = $this->parseDate($entry->actual_release_date ?? $entry->release_date);
-        
+
         if (!$startDate || !$releaseDate) {
             return 0;
         }
@@ -52,50 +52,77 @@ class TimesheetCalculatorService
     /**
      * Defects Density = 1 if item_type is BUG, 0 otherwise
      */
-    private function calculateDefectsDensity($entry): int
+    private function calculateDefectsDensity($entry): float
     {
-        return strtoupper($entry->item_type ?? '') === 'BUG' ? 1 : 0;
+        $reportedBy = strtolower($entry->reported_by ?? '');
+        $itemType = strtolower($entry->item_type ?? '');
+
+        //   if reported by is plannend 
+        if (strpos($reportedBy, 'planned') !== false) {
+            return 0;
+        }
+        // If reported by is "internal team"
+        if (strpos($reportedBy, 'internal team') !== false) {
+            return 1;
+        }
+
+        // If item type is "bug"
+        if (strpos($itemType, 'bug') !== false) {
+            return 1;
+        }
+
+        // If reported by is not "planned" and item type is "story" or "task"
+        if (strpos($itemType, 'story') !== false || strpos($itemType, 'task') !== false) {
+            return 1;
+        }
+
+        return 0;
     }
 
     /**
      * Weekly Points = Actual Points OR Log Hours Decimal OR Log Hours
      * Priority: actual_points > log_hours_decimal > log_hours > 0
      */
-    private function calculateWeeklyPoints($entry): float
+    private function calculateWeeklyPoints(Collection $entries): array
     {
-        // First try actual_points
-        if (isset($entry->actual_points) && $entry->actual_points > 0) {
-            return (float) $entry->actual_points;
+        // group by item id and log owner 
+        $grouped = $entries->groupBy(function ($entry) {
+            return $entry->item_id . '|' . $entry->log_owner;
+        });
+        $weeklyPoints = [];
+        foreach ($grouped as $key => $itemEntries) {
+            [$itemId, $owner] = explode('|', $key);
+            $sum = $itemEntries->sum('log_hours_decimal');
+            $weeklyPoints[] = [
+                'item_id' => $itemId,
+                'log_owner' => $owner,
+                'weekly_points' => $sum,
+            ];
         }
-        
-        // Then try log_hours_decimal 
-        if (isset($entry->log_hours_decimal) && $entry->log_hours_decimal > 0) {
-            return (float) $entry->log_hours_decimal;
-        }
-        
-        // Then try log_hours (convert if it's in time format)
-        if (isset($entry->log_hours) && $entry->log_hours > 0) {
-            return $this->convertToDecimalHours($entry->log_hours);
-        }
-        
-        return 0;
+        return $weeklyPoints;
     }
 
-    /**
-     * Story Point Accuracy = (Estimated Points / Actual Points) * 100
-     * If estimated is 0 or actual is 0, return 0
-     */
-    private function calculateStoryPointAccuracy($entry): float
+    //  * Story Point Accuracy = (Estimated Points / Actual Points) * 100
+    //  * If estimated is 0 or actual is 0, return 0
+    //  */
+    private function calculateStoryPointAccuracy(Collection $entries): float
     {
-        $estimated = (float) ($entry->estimated_points ?? 0);
-        $actual = $this->calculateWeeklyPoints($entry);
-        
-        if ($estimated == 0 || $actual == 0) {
-            return 0;
+        $weeklyPoints = $this->calculateWeeklyPoints($entries);
+        $totalAccuracy = 0;
+        $count = 0;
+
+        foreach ($weeklyPoints as $wp) {
+            $estimated = (float)($entries->where('item_id', $wp['item_id'])->where('log_owner', $wp['log_owner'])->first()->estimated_points ?? 0);
+            $actual = $wp['weekly_points'];
+
+            if ($estimated > 0 && $actual > 0) {
+                $accuracy = ($estimated / $actual) * 100;
+                $totalAccuracy += $accuracy;
+                $count++;
+            }
         }
-        
-        // Fixed: Should be estimated/actual, not actual/estimated
-        return ($estimated / $actual) * 100;
+
+        return $count > 0 ? $totalAccuracy / $count : 0;
     }
 
     /**
@@ -106,7 +133,7 @@ class TimesheetCalculatorService
     {
         $expectedDate = $this->parseDate($entry->expected_release_date);
         $actualDate = $this->parseDate($entry->actual_release_date ?? $entry->release_date);
-        
+
         if (!$expectedDate || !$actualDate) {
             return 0;
         }
@@ -133,9 +160,11 @@ class TimesheetCalculatorService
 
         return [
             'total_estimated_points' => $entries->sum('estimated_points'),
-            'total_actual_points' => $calculationCollection->sum('weekly_points'),
-            'total_weekly_points' => $calculationCollection->sum('weekly_points'),
-            
+            'total_actual_points' => $calculationCollection->sum(function ($calc) {
+                return array_sum(array_column($calc['weekly_points'], 'weekly_points'));
+            }),
+            'total_weekly_points' => $calculationCollection->sum(fn($c) => array_sum(array_column($c['weekly_points'], 'weekly_points'))),
+
             // Fixed: Remove filtering to include all entries in averages
             'average_lead_time' => round($calculationCollection->avg('lead_time') ?? 0, 2),
             'average_cycle_time' => round($calculationCollection->avg('cycle_time') ?? 0, 2),
@@ -167,7 +196,6 @@ class TimesheetCalculatorService
 
             // Parse string date
             return Carbon::parse($date);
-            
         } catch (\Exception $e) {
             return null;
         }
@@ -216,11 +244,11 @@ class TimesheetCalculatorService
     {
         $memberStats = [];
         $members = $entries->pluck($memberField)->filter()->unique();
-        
-        foreach($members as $member) {
+
+        foreach ($members as $member) {
             $memberEntries = $entries->where($memberField, $member);
             $memberAverages = $this->calculateAverages($memberEntries);
-            
+
             $memberStats[$member] = [
                 'entry_count' => $memberEntries->count(),
                 'total_estimated_points' => $memberAverages['total_estimated_points'],
@@ -234,7 +262,7 @@ class TimesheetCalculatorService
                 'capacity' => $memberAverages['total_weekly_points'] * 10, // Assuming 10x multiplier
             ];
         }
-        
+
         return $memberStats;
     }
 
@@ -245,10 +273,10 @@ class TimesheetCalculatorService
     {
         $uniqueMembers = $entries->pluck('log_owner')->filter()->unique();
         $averages = $this->calculateAverages($entries);
-        
+
         // Get availability from HR system or pass it as parameter
         $availability = $actualAvailability ?? 96.36; // Use your actual data
-        
+
         return [
             'total_members' => $uniqueMembers->count(),
             'availability' => $availability, // From external source, not calculated
@@ -257,5 +285,43 @@ class TimesheetCalculatorService
             'total_actual_points' => $averages['total_actual_points'],
             'average_story_point_accuracy' => $averages['average_story_point_accuracy'],
         ];
+    }
+
+    private function calculateOvertime($entry): float
+    {
+        // Check if log_type contains "off hour"
+        $logType = strtolower($entry->descriptions ?? '');
+        if (strpos($logType, 'off hour') !== false) {
+            return ($entry->log_hours_decimal ?? 0) * 1.5; // 1.5x for overtime
+        }
+        return $entry->log_hours_decimal ?? 0;
+    }
+
+    public function getExportItemType($entry): string
+    {
+        $reportedBy = strtolower($entry->reported_by ?? '');
+        $itemType = strtolower($entry->item_type ?? '');
+
+        // If reported by is "planned"
+        if (strpos($reportedBy, 'planned') !== false) {
+            return 'Planned';
+        }
+
+        // If reported by is "internal team"
+        if (strpos($reportedBy, 'internal team') !== false) {
+            return 'Hot Fix';
+        }
+
+        // If item type is "bug"
+        if (strpos($itemType, 'bug') !== false) {
+            return 'Bug';
+        }
+
+        // If reported by is not "planned" and item type is "story" or "task"
+        if (strpos($itemType, 'story') !== false || strpos($itemType, 'task') !== false) {
+            return 'New Request';
+        }
+
+        return ucfirst($entry->item_type ?? 'Unknown');
     }
 }

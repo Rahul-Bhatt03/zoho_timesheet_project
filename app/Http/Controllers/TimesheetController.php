@@ -16,7 +16,9 @@ class TimesheetController extends Controller
     public function uploadTimesheet(Request $request)
     {
         $request->validate([
-            'timesheet' => 'required|file|mimes:xlsx,csv,xls'
+            'timesheet' => 'required|file|mimes:xlsx,csv,xls',
+            'week_start_date'=>'date',
+            'week_end_date'=>'date'
         ]);
 
         try {
@@ -25,6 +27,8 @@ class TimesheetController extends Controller
 
             $file = $request->file('timesheet');
             $teamName = $request->input('team_name', 'CTS');
+            $weekStart = $request->input('week_start_date');
+        $weekEnd = $request->input('week_end_date');
 
             // Import using Maatwebsite Excel
             $importer = new ZohoTimesheetImport($teamName);
@@ -43,7 +47,7 @@ class TimesheetController extends Controller
                 $entry->cycle_time = $calculations['cycle_time'];
                 $entry->defects_density = $calculations['defects_density'];
                 $entry->weekly_points = $calculations['weekly_points'];
-                $entry->story_point_accuracy = round($calculations['story_point_accuracy'], 2); // Added rounding
+                $entry->story_point_accuracy = round($calculations['story_point_accuracy'], 2); // 
                 $entry->release_delay = $calculations['release_delay'];
 
                 $entry->save();
@@ -61,7 +65,9 @@ class TimesheetController extends Controller
                     'total_entries' => $updatedEntries->count(),
                     'entries' => $updatedEntries,
                     'averages' => $averages,
-                    'download_available' => true // Added this flag
+                    'download_available' => true ,
+                     'week_start_date' => $weekStart, 
+                'week_end_date' => $weekEnd 
                 ]
             ], 200);
 
@@ -78,7 +84,7 @@ class TimesheetController extends Controller
         }
     }
 
-public function downloadFormattedTimesheet()
+public function downloadFormattedTimesheet(Request $request)
 {
     try {
         Log::info("=== downloadFormattedTimesheet() START ===");
@@ -93,10 +99,14 @@ public function downloadFormattedTimesheet()
             ], 404);
         }
 
+          // Get week parameters from request
+        $weekStart = $request->input('week_start_date');
+        $weekEnd = $request->input('week_end_date');
+
         $filename = 'Miracle_Makers_Weekly_Prod_List_' . date('Y-m-d_His') . '.xlsx';
         Log::info("Generated filename: " . $filename);
         
-        $export = new FormattedTimesheetExport($entries);
+        $export = new FormattedTimesheetExport($entries,$weekStart,$weekEnd);
         
         Log::info("Starting Excel file generation...");
         

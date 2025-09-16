@@ -4,6 +4,7 @@ namespace App\Exports;
 
 use App\Models\TimesheetEntry;
 use App\Services\TimesheetCalculatorService;
+use Carbon\Carbon;
 use Maatwebsite\Excel\Concerns\FromArray;
 use Maatwebsite\Excel\Concerns\WithTitle;
 use Maatwebsite\Excel\Concerns\WithEvents;
@@ -22,15 +23,19 @@ class FormattedTimesheetExport implements FromArray, WithTitle, WithEvents
     protected $averages;
     protected $teamStats;
     protected $memberStats;
+    protected $weekStart;
+    protected $weekEnd;
 
-    public function __construct($entries)
+    public function __construct($entries, $weekStart = null, $weekEnd = null)
     {
         Log::info("=== FormattedTimesheetExport CONSTRUCTOR START ===");
         Log::info("Entries count: " . $entries->count());
 
         $this->entries = $entries;
         $this->calculator = new TimesheetCalculatorService();
-        
+        $this->weekStart = $weekStart ? Carbon::parse($weekStart) : null;
+        $this->weekEnd = $weekEnd ? Carbon::parse($weekEnd) : null;
+
         try {
             $this->averages = $this->calculator->calculateAverages($entries);
             $this->teamStats = $this->calculateTeamStats();
@@ -42,25 +47,42 @@ class FormattedTimesheetExport implements FromArray, WithTitle, WithEvents
             $this->teamStats = ['total_members' => 0, 'availability' => 96.36, 'total_points' => 0];
             $this->memberStats = [];
         }
-        
+
         Log::info("=== FormattedTimesheetExport CONSTRUCTOR END ===");
+    }
+
+    /**
+     * Helper method to extract numeric value from weekly_points array
+     */
+    private function getWeeklyPointsSum($weeklyPointsArray): float
+    {
+        if (!is_array($weeklyPointsArray)) {
+            return (float) $weeklyPointsArray;
+        }
+        
+        $sum = 0;
+        foreach ($weeklyPointsArray as $weeklyPoint) {
+            $sum += $weeklyPoint['weekly_points'] ?? 0;
+        }
+        
+        return $sum;
     }
 
     public function array(): array
     {
         Log::info("=== array() method called ===");
-        
+
         $data = [];
-        
+
         // Row 1-4: Team summary info
-        $data[] = ['', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', 'Total Team members count:', $this->teamStats['total_members']];
-        $data[] = ['', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', 'Capacity: based on team availability and effort est.', ''];
-        $data[] = ['', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', 'Total available team: ' . $this->teamStats['availability'] . '%', ''];
-        $data[] = ['', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', 'Total points delivered: ' . number_format($this->averages['total_weekly_points'], 3), ''];
-        
+        $data[] = ['Total Team members count:', count($this->memberStats)];
+        $data[] = ['Capacity: based on team availability and effort est.', ''];
+        $data[] = ['Total available team: ' . $this->teamStats['availability'] . '%', ''];
+        $data[] = ['Total points delivered: ' . number_format($this->averages['total_weekly_points'], 3), ''];
+
         // Row 5: Empty
         $data[] = [''];
-        
+
         // Row 6: Summary totals
         $summaryRow = array_fill(0, 20, ''); // Fixed to 20 columns
         $summaryRow[10] = number_format($this->averages['average_lead_time'], 0); // K6
@@ -72,21 +94,21 @@ class FormattedTimesheetExport implements FromArray, WithTitle, WithEvents
         $summaryRow[16] = number_format($this->averages['average_story_point_accuracy'], 2); // Q6
         $summaryRow[19] = number_format($this->averages['average_release_delay'], 2); // T6
         $data[] = $summaryRow;
-        
+
         // Row 7: Headers
         $data[] = [
             'APPLICATION',
-            'ITEM NAME', 
+            'ITEM NAME',
             'Item detail / Subtask',
             'ITEM TYPE',
             'TEAM NAME',
             'Requested Date',
-            'Expected Start date', 
+            'Expected Start date',
             'Expected Release Date',
             'Actual Start Date',
             'Actual Release Date',
             'Lead Time',
-            'Cycle Time', 
+            'Cycle Time',
             'Defects density',
             'Estimated Points',
             'Actual Points',
@@ -96,76 +118,35 @@ class FormattedTimesheetExport implements FromArray, WithTitle, WithEvents
             'ZOHO LINK',
             'Release delay'
         ];
-        
+
         // Data rows - completed items only
-        $completedEntries = $this->entries->filter(function($entry) {
-            return !is_null($entry->actual_release_date) && 
-                   strtolower($entry->item_type ?? '') !== 'planned' &&
-                   strtolower($entry->status ?? '') !== 'in progress';
+        $completedEntries = $this->entries->filter(function ($entry) {
+            $completedOn = $entry->release_date ? Carbon::parse($entry->release_date) : null;
+
+            // If we have week data, check if task was completed within the week
+            if ($this->weekStart && $this->weekEnd && $completedOn) {
+                return $completedOn->between($this->weekStart, $this->weekEnd) &&
+                    !is_null($entry->actual_release_date);
+            }
+
+            // Fallback to original logic if no week data provided
+            return !is_null($entry->actual_release_date) &&
+                strtolower($entry->item_type ?? '') !== 'planned' &&
+                strtolower($entry->status ?? '') !== 'in progress';
         });
-        
-        foreach($completedEntries as $entry) {
+
+        foreach ($completedEntries as $entry) {
             $calculations = $this->calculator->calculateAllFormulas($entry);
+            $exportItemType = $this->calculator->getExportItemType($entry);
             
+            // Extract numeric weekly points
+            $weeklyPointsSum = $this->getWeeklyPointsSum($calculations['weekly_points']);
+
             $data[] = [
-                $entry->application ?? 'Enrollment',
+                $entry->epic ?? 'Enrollment',
                 $entry->item_name ?? '',
                 $entry->item_detail ?? '',
-                $entry->item_type ?? '',
-                $entry->log_owner ?? $entry->team_name ?? '',
-                $entry->requested_date ? $entry->requested_date->format('M j') : '',
-                $entry->expected_start_date ? $entry->expected_start_date->format('M j') : '',
-                $entry->expected_release_date ? $entry->expected_release_date->format('M j') : '',
-                $entry->actual_start_date ? $entry->actual_start_date->format('M j') : '',
-                $entry->actual_release_date ? $entry->actual_release_date->format('M j') : '',
-                $calculations['lead_time'],
-                $calculations['cycle_time'],
-                $calculations['defects_density'], 
-                $entry->estimated_points ?? 0,
-                $entry->actual_points ?? 0,
-                number_format($calculations['weekly_points'], 2),
-                number_format($calculations['story_point_accuracy'], 2),
-                $entry->remarks ?? '',
-                $entry->zoho_link ?? '',
-                $calculations['release_delay']
-            ];
-        }
-        
-        // Totals row
-        $data[] = [
-            'TOTALS/AVERAGES', '', '', '', '', '', '', '', '', '',
-            number_format($this->averages['average_lead_time'], 2),
-            number_format($this->averages['average_cycle_time'], 2), 
-            number_format($this->averages['average_defects_density'], 2),
-            number_format($this->averages['total_estimated_points'], 0),
-            number_format($this->averages['total_actual_points'], 0),
-            number_format($this->averages['total_weekly_points'], 3),
-            number_format($this->averages['average_story_point_accuracy'], 2),
-            '', '',
-            number_format($this->averages['average_release_delay'], 2)
-        ];
-        
-        // Empty rows
-        $data[] = array_fill(0, 20, '');
-        $data[] = array_fill(0, 20, '');
-        
-        // In Progress section
-        $data[] = ['In progress', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', ''];
-        
-        $inProgressEntries = $this->entries->filter(function($entry) {
-            return is_null($entry->actual_release_date) || 
-                   strtolower($entry->status ?? '') === 'in progress' ||
-                   strtolower($entry->item_type ?? '') === 'planned';
-        });
-        
-        foreach($inProgressEntries as $entry) {
-            $calculations = $this->calculator->calculateAllFormulas($entry);
-            
-            $data[] = [
-                $entry->application ?? 'Enrollment',
-                $entry->item_name ?? '',
-                $entry->item_detail ?? '',
-                $entry->item_type ?? '',
+                $exportItemType,
                 $entry->log_owner ?? $entry->team_name ?? '',
                 $entry->requested_date ? $entry->requested_date->format('M j') : '',
                 $entry->expected_start_date ? $entry->expected_start_date->format('M j') : '',
@@ -177,30 +158,119 @@ class FormattedTimesheetExport implements FromArray, WithTitle, WithEvents
                 $calculations['defects_density'],
                 $entry->estimated_points ?? 0,
                 $entry->actual_points ?? 0,
-                number_format($calculations['weekly_points'], 2),
+                number_format($weeklyPointsSum, 2), // Fixed: use numeric sum
                 number_format($calculations['story_point_accuracy'], 2),
                 $entry->remarks ?? '',
                 $entry->zoho_link ?? '',
                 $calculations['release_delay']
             ];
         }
-        
+
+        // Totals row
+        $data[] = [
+            'TOTALS/AVERAGES',
+            '',
+            '',
+            '',
+            '',
+            '',
+            '',
+            '',
+            '',
+            '',
+            number_format($this->averages['average_lead_time'], 2),
+            number_format($this->averages['average_cycle_time'], 2),
+            number_format($this->averages['average_defects_density'], 2),
+            number_format($this->averages['total_estimated_points'], 0),
+            number_format($this->averages['total_actual_points'], 0),
+            number_format($this->averages['total_weekly_points'], 3),
+            number_format($this->averages['average_story_point_accuracy'], 2),
+            '',
+            '',
+            number_format($this->averages['average_release_delay'], 2)
+        ];
+
+        // Empty rows
+        $data[] = array_fill(0, 20, '');
+        $data[] = array_fill(0, 20, '');
+
+        // In Progress section
+        $data[] = ['In progress', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', ''];
+
+        $inProgressEntries = $this->entries->filter(function ($entry) {
+            $completedOn = $entry->release_date ? Carbon::parse($entry->release_date) : null;
+
+            // If we have week data, show as in-progress if NOT completed within the week
+            if ($this->weekStart && $this->weekEnd) {
+                if ($completedOn) {
+                    return !$completedOn->between($this->weekStart, $this->weekEnd);
+                }
+                return true; // No completion date means in progress
+            }
+
+            // Fallback to original logic if no week data provided
+            return is_null($entry->actual_release_date) ||
+                strtolower($entry->status ?? '') === 'in progress' ||
+                strtolower($entry->item_type ?? '') === 'planned';
+        });
+
+        foreach ($inProgressEntries as $entry) {
+            $calculations = $this->calculator->calculateAllFormulas($entry);
+            $exportItemType = $this->calculator->getExportItemType($entry);
+            
+            // Extract numeric weekly points
+            $weeklyPointsSum = $this->getWeeklyPointsSum($calculations['weekly_points']);
+
+            $data[] = [
+                $entry->epic ?? 'Enrollment',
+                $entry->item_name ?? '',
+                $entry->item_detail ?? '',
+                $exportItemType,
+                $entry->log_owner ?? $entry->team_name ?? '',
+                $entry->requested_date ? $entry->requested_date->format('M j') : '',
+                $entry->expected_start_date ? $entry->expected_start_date->format('M j') : '',
+                $entry->expected_release_date ? $entry->expected_release_date->format('M j') : '',
+                $entry->actual_start_date ? $entry->actual_start_date->format('M j') : '',
+                $entry->actual_release_date ? $entry->actual_release_date->format('M j') : '',
+                $calculations['lead_time'],
+                $calculations['cycle_time'],
+                $calculations['defects_density'],
+                $entry->estimated_points ?? 0,
+                $entry->actual_points ?? 0,
+                number_format($weeklyPointsSum, 2), // Fixed: use numeric sum
+                number_format($calculations['story_point_accuracy'], 2),
+                $entry->remarks ?? '',
+                $entry->zoho_link ?? '',
+                $calculations['release_delay']
+            ];
+        }
+
         // Empty rows before member-wise section
         $data[] = array_fill(0, 20, '');
         $data[] = array_fill(0, 20, '');
-        
+
         // Member-wise Calculation section
         $data[] = ['Member-wise Calculation', '', '', '', '', '', '', '', '', '', ''];
         $data[] = [
-            'Resource', 'Leave Count', 'Average Lead Time', 'Average Cycle Time',
-            'Average Defect Density', 'Total Weekly Points', 'Capacity', 
-            'Story point accuracy', 'Average Release Delay', 'Planned Leave', 'Unplanned Leave'
+            'Resource',
+            'Planned Leave',
+            'Unplanned Leave',
+            'Leave Count',
+            'Average Lead Time',
+            'Average Cycle Time',
+            'Average Defect Density',
+            'Total Weekly Points',
+            'Capacity',
+            'Story point accuracy',
+            'Average Release Delay',
         ];
-        
+
         // Member-wise data
         foreach($this->memberStats as $member => $stats) {
             $data[] = [
                 $member,
+                $stats['planned_leave'] ?? 0,
+                $stats['unplanned_leave'] ?? 0,
                 $stats['leave_count'] ?? 0,
                 number_format($stats['avg_lead_time'] ?? 0, 2),
                 number_format($stats['avg_cycle_time'] ?? 0, 2),
@@ -209,18 +279,24 @@ class FormattedTimesheetExport implements FromArray, WithTitle, WithEvents
                 number_format($stats['capacity'] ?? 0, 2),
                 number_format($stats['story_point_accuracy'] ?? 0, 2),
                 number_format($stats['avg_release_delay'] ?? 0, 2),
-                $stats['planned_leave'] ?? 0,
-                $stats['unplanned_leave'] ?? 0
             ];
         }
-        
+
         // Final summary row
         $data[] = [
-            'Total team members', count($this->memberStats), '', '', '', 
-            'Total weekly points', number_format($this->averages['total_weekly_points'], 3), '', 
-            'Team Availability', $this->teamStats['availability'] . '%', ''
+            'Total team members',
+            count($this->memberStats),
+            '',
+            '',
+            '',
+            'Total weekly points',
+            number_format($this->averages['total_weekly_points'], 3),
+            '',
+            'Team Availability',
+            $this->teamStats['availability'] . '%',
+            ''
         ];
-        
+
         Log::info("Generated data array with " . count($data) . " rows");
         return $data;
     }
@@ -233,7 +309,7 @@ class FormattedTimesheetExport implements FromArray, WithTitle, WithEvents
     public function registerEvents(): array
     {
         return [
-            AfterSheet::class => function(AfterSheet $event) {
+            AfterSheet::class => function (AfterSheet $event) {
                 Log::info("=== AfterSheet EVENT TRIGGERED ===");
                 try {
                     $sheet = $event->sheet->getDelegate();
@@ -242,7 +318,6 @@ class FormattedTimesheetExport implements FromArray, WithTitle, WithEvents
                 } catch (\Exception $e) {
                     Log::error("ERROR in AfterSheet event: " . $e->getMessage());
                     Log::error("Stack trace: " . $e->getTraceAsString());
-                    // Don't throw the exception, just log it and continue
                 }
             },
         ];
@@ -251,7 +326,7 @@ class FormattedTimesheetExport implements FromArray, WithTitle, WithEvents
     private function formatSheet(Worksheet $sheet)
     {
         Log::info("=== formatSheet() START ===");
-        
+
         try {
             // Style team summary (rows 1-4)
             $sheet->getStyle('T1:U4')->applyFromArray([
@@ -262,7 +337,7 @@ class FormattedTimesheetExport implements FromArray, WithTitle, WithEvents
                 ],
                 'borders' => ['allBorders' => ['borderStyle' => Border::BORDER_THIN]]
             ]);
-            
+
             // Style summary numbers row (row 6) with yellow background
             $sheet->getStyle('K6:T6')->applyFromArray([
                 'font' => ['bold' => true],
@@ -273,7 +348,7 @@ class FormattedTimesheetExport implements FromArray, WithTitle, WithEvents
                 'borders' => ['allBorders' => ['borderStyle' => Border::BORDER_THICK]],
                 'alignment' => ['horizontal' => Alignment::HORIZONTAL_CENTER]
             ]);
-            
+
             // Style main headers (row 7)
             $sheet->getStyle('A7:T7')->applyFromArray([
                 'font' => ['bold' => true, 'color' => ['argb' => 'FFFFFFFF'], 'size' => 11],
@@ -288,23 +363,22 @@ class FormattedTimesheetExport implements FromArray, WithTitle, WithEvents
                 ]
             ]);
             $sheet->getRowDimension(7)->setRowHeight(25);
-            
+
             // Auto-size columns
-            foreach(range('A','T') as $columnID) {
+            foreach (range('A', 'T') as $columnID) {
                 $sheet->getColumnDimension($columnID)->setAutoSize(true);
             }
-            
         } catch (\Exception $e) {
             Log::error("ERROR in formatSheet: " . $e->getMessage());
             Log::error("Stack trace: " . $e->getTraceAsString());
         }
-        
+
         Log::info("=== formatSheet() END ===");
     }
-    
+
     private function getRowColor($itemType): ?string
     {
-        switch(strtoupper(trim($itemType ?? ''))) {
+        switch (strtoupper(trim($itemType ?? ''))) {
             case 'BUG':
                 return 'FFFFCCCC'; // Light red
             case 'NEW REQUEST':
@@ -322,7 +396,7 @@ class FormattedTimesheetExport implements FromArray, WithTitle, WithEvents
     private function calculateTeamStats(): array
     {
         $uniqueMembers = $this->entries->pluck('log_owner')->filter()->unique();
-        
+
         return [
             'total_members' => $uniqueMembers->count(),
             'availability' => 96.36, // This should come from your HR system
@@ -334,34 +408,41 @@ class FormattedTimesheetExport implements FromArray, WithTitle, WithEvents
     {
         $memberStats = [];
         $members = $this->entries->pluck('log_owner')->filter()->unique();
-        
-        foreach($members as $member) {
+
+        foreach ($members as $member) {
             $memberEntries = $this->entries->where('log_owner', $member);
             $memberCalculations = [];
-            
-            foreach($memberEntries as $entry) {
+
+            foreach ($memberEntries as $entry) {
                 $memberCalculations[] = $this->calculator->calculateAllFormulas($entry);
             }
-            
+
             $calculationCollection = collect($memberCalculations);
-            
+
+            // Calculate total weekly points correctly
+            $totalWeeklyPoints = 0;
+            foreach ($memberCalculations as $calculation) {
+                // weekly_points is an array, so we need to sum its values
+                $totalWeeklyPoints += $this->getWeeklyPointsSum($calculation['weekly_points']);
+            }
+
             $memberStats[$member] = [
                 'leave_count' => 0, // Would come from leave system
                 'avg_lead_time' => $calculationCollection->avg('lead_time') ?? 0,
                 'avg_cycle_time' => $calculationCollection->avg('cycle_time') ?? 0,
                 'avg_defect_density' => $calculationCollection->avg('defects_density') ?? 0,
-                'total_weekly_points' => $calculationCollection->sum('weekly_points') ?? 0,
-                'capacity' => ($calculationCollection->sum('weekly_points') ?? 0) * 10, // Assuming 10x multiplier
+                'total_weekly_points' => $totalWeeklyPoints,
+                'capacity' => $totalWeeklyPoints * 10, // Fixed: use calculated value
                 'story_point_accuracy' => $calculationCollection->avg('story_point_accuracy') ?? 0,
                 'avg_release_delay' => $calculationCollection->avg('release_delay') ?? 0,
                 'planned_leave' => 0, // Would come from leave system
                 'unplanned_leave' => 0, // Would come from leave system
             ];
         }
-        
+
         return $memberStats;
     }
-    
+
     private function getEmptyAverages(): array
     {
         return [
