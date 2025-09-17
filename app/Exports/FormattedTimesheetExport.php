@@ -323,75 +323,195 @@ class FormattedTimesheetExport implements FromArray, WithTitle, WithEvents
         ];
     }
 
-    private function formatSheet(Worksheet $sheet)
-    {
-        Log::info("=== formatSheet() START ===");
+   private function formatSheet(Worksheet $sheet)
+{
+    Log::info("=== formatSheet() START ===");
 
-        try {
-            // Style team summary (rows 1-4)
-            $sheet->getStyle('T1:U4')->applyFromArray([
-                'font' => ['bold' => true, 'size' => 10],
+    try {
+        // Style team summary (rows 1-4)
+        $sheet->getStyle('T1:U4')->applyFromArray([
+            'font' => ['bold' => true, 'size' => 10],
+            'fill' => [
+                'fillType' => Fill::FILL_SOLID,
+                'color' => ['argb' => 'FFE6F3FF']
+            ],
+            'borders' => ['allBorders' => ['borderStyle' => Border::BORDER_THIN]]
+        ]);
+
+        // Style summary numbers row (row 6) with yellow background
+        $sheet->getStyle('K6:T6')->applyFromArray([
+            'font' => ['bold' => true],
+            'fill' => [
+                'fillType' => Fill::FILL_SOLID,
+                'color' => ['argb' => 'FFFFFF00']
+            ],
+            'borders' => ['allBorders' => ['borderStyle' => Border::BORDER_THICK]],
+            'alignment' => ['horizontal' => Alignment::HORIZONTAL_CENTER]
+        ]);
+
+        // Style main headers (row 7)
+        $sheet->getStyle('A7:T7')->applyFromArray([
+            'font' => ['bold' => true, 'color' => ['argb' => 'FFFFFFFF'], 'size' => 11],
+            'fill' => [
+                'fillType' => Fill::FILL_SOLID,
+                'color' => ['argb' => 'FF4472C4'] // Blue
+            ],
+            'borders' => ['allBorders' => ['borderStyle' => Border::BORDER_MEDIUM]],
+            'alignment' => [
+                'horizontal' => Alignment::HORIZONTAL_CENTER,
+                'vertical' => Alignment::VERTICAL_CENTER
+            ]
+        ]);
+        $sheet->getRowDimension(7)->setRowHeight(25);
+
+        // Apply item type colors to ALL data rows (both completed and in-progress)
+        $this->applyItemTypeColors($sheet);
+        
+        // Then apply section colors (these will override item type colors for section headers)
+        $this->styleInProgressSection($sheet);
+        $this->styleMemberWiseSection($sheet);
+
+        // Auto-size columns
+        foreach (range('A', 'T') as $columnID) {
+            $sheet->getColumnDimension($columnID)->setAutoSize(true);
+        }
+    } catch (\Exception $e) {
+        Log::error("ERROR in formatSheet: " . $e->getMessage());
+        Log::error("Stack trace: " . $e->getTraceAsString());
+    }
+
+    Log::info("=== formatSheet() END ===");
+}
+
+private function applyItemTypeColors(Worksheet $sheet)
+{
+    $highestRow = $sheet->getHighestRow();
+    
+    // Start from row 8 (after headers) and go through all data rows
+    for ($row = 8; $row <= $highestRow; $row++) {
+        $itemTypeCell = $sheet->getCell('D' . $row); // Column D contains ITEM TYPE
+        $itemType = $itemTypeCell->getValue();
+        
+        // Skip empty rows and section header rows
+        if (empty($itemType) || 
+            $itemType === 'In progress' || 
+            $itemType === 'Member-wise Calculation' ||
+            $itemType === 'Resource') {
+            continue;
+        }
+        
+        $color = $this->getRowColor($itemType);
+        
+       if ($color) {
+    $sheet->getStyle('D' . $row)->applyFromArray([
+        'fill' => [
+            'fillType' => Fill::FILL_SOLID,
+            'color' => ['argb' => $color]
+        ]
+    ]);
+}
+    }
+}
+
+private function getRowColor($itemType): ?string
+{
+    $type = strtoupper(trim($itemType ?? ''));
+    
+    switch ($type) {
+        case 'BUG':
+            return 'FFFFCCCC'; // Light red
+        case 'NEW REQUEST':
+            return 'FFCCFFCC'; // Light green  
+        case 'PLANNED':
+            return 'FFCCCCFF'; // Light blue
+        case 'MEETING':
+        case 'MEETINGS':
+        case 'DAILY STAND-UP':
+            return 'FFFFFF99'; // Light yellow
+        case 'TASK':
+            return 'FFE6CCFF'; // Light purple
+        case 'STORY':
+            return 'FFCCE6FF'; // Light blue
+        case 'HOT FIX':
+            return 'FFFFCC99'; // Light orange
+        case 'ENHANCEMENT':
+            return 'FFCCFFFF'; // Light cyan
+        default:
+            return 'FFFFFFFF'; // White (default)
+    }
+}
+
+private function styleInProgressSection(Worksheet $sheet)
+{
+    $highestRow = $sheet->getHighestRow();
+    
+    // Find the "In progress" row
+    for ($row = 1; $row <= $highestRow; $row++) {
+        $cellValue = $sheet->getCell('A' . $row)->getValue();
+        if ($cellValue === 'In progress') {
+            // Style the "In progress" header row with orange background (override item type color)
+            $sheet->getStyle('A' . $row . ':T' . $row)->applyFromArray([
+                'font' => ['bold' => true, 'color' => ['argb' => 'FFFFFFFF'], 'size' => 11],
                 'fill' => [
                     'fillType' => Fill::FILL_SOLID,
-                    'color' => ['argb' => 'FFE6F3FF']
+                    'color' => ['argb' => 'FFFFA500'] // Orange
+                ],
+                'borders' => ['allBorders' => ['borderStyle' => Border::BORDER_MEDIUM]],
+                'alignment' => ['horizontal' => Alignment::HORIZONTAL_CENTER]
+            ]);
+            break;
+        }
+    }
+}
+
+private function styleMemberWiseSection(Worksheet $sheet)
+{
+    $highestRow = $sheet->getHighestRow();
+    
+    // Find the "Member-wise Calculation" row
+    for ($row = 1; $row <= $highestRow; $row++) {
+        $cellValue = $sheet->getCell('A' . $row)->getValue();
+        if ($cellValue === 'Member-wise Calculation') {
+            // Style the "Member-wise Calculation" header row with green background
+            $sheet->getStyle('A' . $row . ':K' . $row)->applyFromArray([
+                'font' => ['bold' => true, 'color' => ['argb' => 'FFFFFFFF'], 'size' => 11],
+                'fill' => [
+                    'fillType' => Fill::FILL_SOLID,
+                    'color' => ['argb' => 'FF4F8A10'] // Green
+                ],
+                'borders' => ['allBorders' => ['borderStyle' => Border::BORDER_MEDIUM]],
+                'alignment' => ['horizontal' => Alignment::HORIZONTAL_CENTER]
+            ]);
+
+            // Style the member-wise column headers (next row)
+            $headerRow = $row + 1;
+            $sheet->getStyle('A' . $headerRow . ':K' . $headerRow)->applyFromArray([
+                'font' => ['bold' => true],
+                'fill' => [
+                    'fillType' => Fill::FILL_SOLID,
+                    'color' => ['argb' => 'FFE6F3FF'] // Light blue
                 ],
                 'borders' => ['allBorders' => ['borderStyle' => Border::BORDER_THIN]]
             ]);
 
-            // Style summary numbers row (row 6) with yellow background
-            $sheet->getStyle('K6:T6')->applyFromArray([
-                'font' => ['bold' => true],
-                'fill' => [
-                    'fillType' => Fill::FILL_SOLID,
-                    'color' => ['argb' => 'FFFFFF00']
-                ],
-                'borders' => ['allBorders' => ['borderStyle' => Border::BORDER_THICK]],
-                'alignment' => ['horizontal' => Alignment::HORIZONTAL_CENTER]
-            ]);
-
-            // Style main headers (row 7)
-            $sheet->getStyle('A7:T7')->applyFromArray([
-                'font' => ['bold' => true, 'color' => ['argb' => 'FFFFFFFF'], 'size' => 11],
-                'fill' => [
-                    'fillType' => Fill::FILL_SOLID,
-                    'color' => ['argb' => 'FF4472C4']
-                ],
-                'borders' => ['allBorders' => ['borderStyle' => Border::BORDER_MEDIUM]],
-                'alignment' => [
-                    'horizontal' => Alignment::HORIZONTAL_CENTER,
-                    'vertical' => Alignment::VERTICAL_CENTER
-                ]
-            ]);
-            $sheet->getRowDimension(7)->setRowHeight(25);
-
-            // Auto-size columns
-            foreach (range('A', 'T') as $columnID) {
-                $sheet->getColumnDimension($columnID)->setAutoSize(true);
+            // Style the final summary row
+            $summaryRow = $headerRow + count($this->memberStats) + 1;
+            $summaryCellValue = $sheet->getCell('A' . $summaryRow)->getValue();
+            if ($summaryCellValue === 'Total team members') {
+                $sheet->getStyle('A' . $summaryRow . ':K' . $summaryRow)->applyFromArray([
+                    'font' => ['bold' => true],
+                    'fill' => [
+                        'fillType' => Fill::FILL_SOLID,
+                        'color' => ['argb' => 'FFFFFFCC'] // Light yellow
+                    ],
+                    'borders' => ['top' => ['borderStyle' => Border::BORDER_DOUBLE]]
+                ]);
             }
-        } catch (\Exception $e) {
-            Log::error("ERROR in formatSheet: " . $e->getMessage());
-            Log::error("Stack trace: " . $e->getTraceAsString());
-        }
-
-        Log::info("=== formatSheet() END ===");
-    }
-
-    private function getRowColor($itemType): ?string
-    {
-        switch (strtoupper(trim($itemType ?? ''))) {
-            case 'BUG':
-                return 'FFFFCCCC'; // Light red
-            case 'NEW REQUEST':
-                return 'FFCCFFCC'; // Light green  
-            case 'PLANNED':
-                return 'FFCCCCFF'; // Light blue
-            case 'MEETING':
-            case 'MEETINGS':
-                return 'FFFFFF99'; // Light yellow
-            default:
-                return null;
+            
+            break;
         }
     }
+}
 
     private function calculateTeamStats(): array
     {

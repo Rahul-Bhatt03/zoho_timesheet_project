@@ -30,8 +30,8 @@ class TimesheetCalculatorService
         if (!$requestedDate || !$releaseDate) {
             return 0;
         }
-
-        return $requestedDate->diffInDays($releaseDate);
+return $this->getBusinessDays($requestedDate,$releaseDate);
+        // return $requestedDate->diffInDays($releaseDate);
     }
 
     /**
@@ -46,7 +46,7 @@ class TimesheetCalculatorService
             return 0;
         }
 
-        return $startDate->diffInDays($releaseDate);
+return $this->getBusinessDays($startDate, $releaseDate);
     }
 
     /**
@@ -138,8 +138,13 @@ class TimesheetCalculatorService
             return 0;
         }
 
-        // Fixed: Expected - Actual (positive = delay, negative = early)
-        return $expectedDate->diffInDays($actualDate, false);
+        // Expected - Actual (positive = delay, negative = early)
+        // return $expectedDate->diffInDays($actualDate, false);
+       if ($actualDate->gte($expectedDate)) {
+        return $this->getBusinessDays($expectedDate, $actualDate);
+    } else {
+        return -$this->getBusinessDays($actualDate, $expectedDate);
+    }
     }
 
     /**
@@ -323,5 +328,18 @@ class TimesheetCalculatorService
         }
 
         return ucfirst($entry->item_type ?? 'Unknown');
+    }
+
+    public function getBusinessDays(Carbon $startDate , Carbon $endDate):float{
+$days=0;
+$current=$startDate->copy();
+while($current->lte($endDate)){
+    // skip weekend (Saturday=6 and sunday =0)
+    if($current->isWeekend()){
+        $days++;
+    }
+    $current->addDay();
+}
+return $days; 
     }
 }
