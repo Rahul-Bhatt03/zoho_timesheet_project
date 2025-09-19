@@ -327,7 +327,7 @@ return $this->getBusinessDays($startDate, $releaseDate);
             return 'New Request';
         }
 
-        return ucfirst($entry->item_type ?? 'Unknown');
+        return ucfirst($entry->item_type ??'');
     }
 
     public function getBusinessDays(Carbon $startDate , Carbon $endDate):float{

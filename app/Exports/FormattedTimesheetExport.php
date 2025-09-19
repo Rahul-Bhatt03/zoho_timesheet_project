@@ -44,7 +44,7 @@ class FormattedTimesheetExport implements FromArray, WithTitle, WithEvents
         } catch (\Exception $e) {
             Log::error("Failed to calculate stats: " . $e->getMessage());
             $this->averages = $this->getEmptyAverages();
-            $this->teamStats = ['total_members' => 0, 'availability' => 96.36, 'total_points' => 0];
+            $this->teamStats = ['total_members' => 0, 'availability' => '', 'total_points' => 0];
             $this->memberStats = [];
         }
 
@@ -66,6 +66,58 @@ class FormattedTimesheetExport implements FromArray, WithTitle, WithEvents
         }
         
         return $sum;
+    }
+
+    /**
+     * Group entries by item_id and log_owner to avoid duplicates
+     */
+    private function groupEntriesByItemAndOwner($entries)
+    {
+        $grouped = [];
+        
+        foreach ($entries as $entry) {
+            $key = ($entry->item_id ?? 'no_id') . '_' . ($entry->log_owner ?? 'no_owner');
+            
+            if (!isset($grouped[$key])) {
+                $grouped[$key] = $entry;
+            } else {
+                // Merge the actual_points and weekly_points if multiple entries exist
+                $existing = $grouped[$key];
+                $existing->actual_points = ($existing->actual_points ?? 0) + ($entry->actual_points ?? 0);
+                
+                // Update other fields if they're empty in the existing entry
+                $existing->remarks = $existing->remarks ?: $entry->remarks;
+                $existing->zoho_link = $existing->zoho_link ?: $entry->zoho_link;
+            }
+        }
+        
+        return collect(array_values($grouped));
+    }
+
+    /**
+     * Check if an item type is a meeting
+     */
+    private function isMeetingType($itemType): bool
+    {
+        $meetingTypes = ['meeting', 'meetings', 'daily stand-up', 'standup', 'stand-up'];
+        return in_array(strtolower(trim($itemType ?? '')), $meetingTypes);
+    }
+
+    /**
+     * Check if an item name indicates a meeting
+     */
+    private function isMeetingItem($itemName): bool
+    {
+        $meetingKeywords = ['standup', 'meeting', 'demo', 'discussion', 'stand-up'];
+        $itemNameLower = strtolower($itemName ?? '');
+        
+        foreach ($meetingKeywords as $keyword) {
+            if (strpos($itemNameLower, $keyword) !== false) {
+                return true;
+            }
+        }
+        
+        return false;
     }
 
     public function array(): array
@@ -119,7 +171,7 @@ class FormattedTimesheetExport implements FromArray, WithTitle, WithEvents
             'Release delay'
         ];
 
-        // Data rows - completed items only
+        // Data rows - completed items only (grouped by item_id and log_owner)
         $completedEntries = $this->entries->filter(function ($entry) {
             $completedOn = $entry->release_date ? Carbon::parse($entry->release_date) : null;
 
@@ -130,12 +182,25 @@ class FormattedTimesheetExport implements FromArray, WithTitle, WithEvents
             }
 
             // Fallback to original logic if no week data provided
-            return !is_null($entry->actual_release_date) &&
-                strtolower($entry->item_type ?? '') !== 'planned' &&
-                strtolower($entry->status ?? '') !== 'in progress';
+            return !is_null($entry->actual_release_date);
         });
 
-        foreach ($completedEntries as $entry) {
+        // Group completed entries to avoid duplicates
+        $groupedCompletedEntries = $this->groupEntriesByItemAndOwner($completedEntries);
+
+        // Separate meetings and regular items
+        $regularItems = $groupedCompletedEntries->filter(function ($entry) {
+            $exportItemType = $this->calculator->getExportItemType($entry);
+            return !$this->isMeetingType($exportItemType) && !$this->isMeetingItem($entry->item_name);
+        });
+
+        $meetingItems = $groupedCompletedEntries->filter(function ($entry) {
+            $exportItemType = $this->calculator->getExportItemType($entry);
+            return $this->isMeetingType($exportItemType) || $this->isMeetingItem($entry->item_name);
+        });
+
+        // Add regular items first
+        foreach ($regularItems as $entry) {
             $calculations = $this->calculator->calculateAllFormulas($entry);
             $exportItemType = $this->calculator->getExportItemType($entry);
             
@@ -143,7 +208,7 @@ class FormattedTimesheetExport implements FromArray, WithTitle, WithEvents
             $weeklyPointsSum = $this->getWeeklyPointsSum($calculations['weekly_points']);
 
             $data[] = [
-                $entry->epic ?? 'Enrollment',
+                $entry->epic,
                 $entry->item_name ?? '',
                 $entry->item_detail ?? '',
                 $exportItemType,
@@ -158,7 +223,39 @@ class FormattedTimesheetExport implements FromArray, WithTitle, WithEvents
                 $calculations['defects_density'],
                 $entry->estimated_points ?? 0,
                 $entry->actual_points ?? 0,
-                number_format($weeklyPointsSum, 2), // Fixed: use numeric sum
+                number_format($weeklyPointsSum, 2),
+                number_format($calculations['story_point_accuracy'], 2),
+                $entry->remarks ?? '',
+                $entry->zoho_link ?? '',
+                $calculations['release_delay']
+            ];
+        }
+
+        // Add meeting items after regular items
+        foreach ($meetingItems as $entry) {
+            $calculations = $this->calculator->calculateAllFormulas($entry);
+            $exportItemType = $this->calculator->getExportItemType($entry);
+            
+            // Extract numeric weekly points
+            $weeklyPointsSum = $this->getWeeklyPointsSum($calculations['weekly_points']);
+
+            $data[] = [
+                $entry->epic,
+                $entry->item_name ?? '',
+                $entry->item_detail ?? '',
+                $exportItemType,
+                $entry->log_owner ?? $entry->team_name ?? '',
+                $entry->requested_date ? $entry->requested_date->format('M j') : '',
+                $entry->expected_start_date ? $entry->expected_start_date->format('M j') : '',
+                $entry->expected_release_date ? $entry->expected_release_date->format('M j') : '',
+                $entry->actual_start_date ? $entry->actual_start_date->format('M j') : '',
+                $entry->actual_release_date ? $entry->actual_release_date->format('M j') : '',
+                $calculations['lead_time'],
+                $calculations['cycle_time'],
+                $calculations['defects_density'],
+                $entry->estimated_points ?? 0,
+                $entry->actual_points ?? 0,
+                number_format($weeklyPointsSum, 2),
                 number_format($calculations['story_point_accuracy'], 2),
                 $entry->remarks ?? '',
                 $entry->zoho_link ?? '',
@@ -194,27 +291,45 @@ class FormattedTimesheetExport implements FromArray, WithTitle, WithEvents
         $data[] = array_fill(0, 20, '');
         $data[] = array_fill(0, 20, '');
 
-        // In Progress section
+        // In Progress section - only items where expected_release_date is before completion date or no completion date
         $data[] = ['In progress', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', ''];
 
         $inProgressEntries = $this->entries->filter(function ($entry) {
-            $completedOn = $entry->release_date ? Carbon::parse($entry->release_date) : null;
+            $expectedReleaseDate = $entry->expected_release_date ? Carbon::parse($entry->expected_release_date) : null;
+            $actualReleaseDate = $entry->actual_release_date ? Carbon::parse($entry->actual_release_date) : null;
+            
+            // Skip meeting items from in-progress section
+            $exportItemType = $this->calculator->getExportItemType($entry);
+            if ($this->isMeetingType($exportItemType) || $this->isMeetingItem($entry->item_name)) {
+                return false;
+            }
+
+            // If no actual release date, it's in progress
+            if (is_null($actualReleaseDate)) {
+                return true;
+            }
+
+            // If expected release date is before actual release date, it's delayed (in progress when it should have been done)
+            if ($expectedReleaseDate && $actualReleaseDate && $expectedReleaseDate->lt($actualReleaseDate)) {
+                return true;
+            }
 
             // If we have week data, show as in-progress if NOT completed within the week
             if ($this->weekStart && $this->weekEnd) {
+                $completedOn = $entry->release_date ? Carbon::parse($entry->release_date) : null;
                 if ($completedOn) {
                     return !$completedOn->between($this->weekStart, $this->weekEnd);
                 }
-                return true; // No completion date means in progress
+                return true;
             }
 
-            // Fallback to original logic if no week data provided
-            return is_null($entry->actual_release_date) ||
-                strtolower($entry->status ?? '') === 'in progress' ||
-                strtolower($entry->item_type ?? '') === 'planned';
+            return false;
         });
 
-        foreach ($inProgressEntries as $entry) {
+        // Group in-progress entries to avoid duplicates
+        $groupedInProgressEntries = $this->groupEntriesByItemAndOwner($inProgressEntries);
+
+        foreach ($groupedInProgressEntries as $entry) {
             $calculations = $this->calculator->calculateAllFormulas($entry);
             $exportItemType = $this->calculator->getExportItemType($entry);
             
@@ -222,7 +337,7 @@ class FormattedTimesheetExport implements FromArray, WithTitle, WithEvents
             $weeklyPointsSum = $this->getWeeklyPointsSum($calculations['weekly_points']);
 
             $data[] = [
-                $entry->epic ?? 'Enrollment',
+                $entry->epic,
                 $entry->item_name ?? '',
                 $entry->item_detail ?? '',
                 $exportItemType,
@@ -237,7 +352,7 @@ class FormattedTimesheetExport implements FromArray, WithTitle, WithEvents
                 $calculations['defects_density'],
                 $entry->estimated_points ?? 0,
                 $entry->actual_points ?? 0,
-                number_format($weeklyPointsSum, 2), // Fixed: use numeric sum
+                number_format($weeklyPointsSum, 2),
                 number_format($calculations['story_point_accuracy'], 2),
                 $entry->remarks ?? '',
                 $entry->zoho_link ?? '',
@@ -417,28 +532,29 @@ private function getRowColor($itemType): ?string
 {
     $type = strtoupper(trim($itemType ?? ''));
     
-    switch ($type) {
-        case 'BUG':
-            return 'FFFFCCCC'; // Light red
-        case 'NEW REQUEST':
-            return 'FFCCFFCC'; // Light green  
-        case 'PLANNED':
-            return 'FFCCCCFF'; // Light blue
-        case 'MEETING':
-        case 'MEETINGS':
-        case 'DAILY STAND-UP':
-            return 'FFFFFF99'; // Light yellow
-        case 'TASK':
-            return 'FFE6CCFF'; // Light purple
-        case 'STORY':
-            return 'FFCCE6FF'; // Light blue
-        case 'HOT FIX':
-            return 'FFFFCC99'; // Light orange
-        case 'ENHANCEMENT':
-            return 'FFCCFFFF'; // Light cyan
-        default:
-            return 'FFFFFFFF'; // White (default)
-    }
+   switch ($type) {
+    case 'BUG':
+        return 'FFFF9999'; // bright pastel red
+    case 'NEW REQUEST':
+        return 'FF99FF99'; // bright pastel green
+    case 'PLANNED':
+        return 'FF99CCFF'; // bright pastel blue
+    case 'MEETING':
+    case 'MEETINGS':
+    case 'DAILY STAND-UP':
+        return 'FFFFFF99'; // bright pastel yellow
+    case 'TASK':
+        return 'FFD1B3FF'; // bright pastel purple
+    case 'STORY':
+        return 'FF99E6FF'; // bright pastel cyan-blue
+    case 'HOT FIX':
+        return 'FFFFB366'; // bright pastel orange
+    case 'ENHANCEMENT':
+        return 'FF99FFFF'; // bright pastel aqua
+    default:
+        return 'FFFFFFFF'; // white (default)
+}
+
 }
 
 private function styleInProgressSection(Worksheet $sheet)
