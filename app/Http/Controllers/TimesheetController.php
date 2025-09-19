@@ -11,13 +11,15 @@ use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
 use Maatwebsite\Excel\Facades\Excel;
 use Maatwebsite\Excel\Excel as ExcelFormat;
+use Illuminate\Support\Facades\Session;
+
 
 class TimesheetController extends Controller
 {
-    public function uploadTimesheet(Request $request)
-    {
-        $request->validate([
-          'timesheet' => [
+ public function uploadTimesheet(Request $request)
+{
+    $request->validate([
+      'timesheet' => [
     'required',
     'file',
     function ($attribute, $value, $fail) {
@@ -45,165 +47,179 @@ class TimesheetController extends Controller
         }
     }
 ],
-            'week_start_date' => 'date',
-            'week_end_date' => 'date'
-        ]);
+        'week_start_date' => 'date',
+        'week_end_date' => 'date'
+    ]);
 
-        try {
-            // Clear previous entries
-            TimesheetEntry::truncate();
+    try {
+        // Clear previous entries
+        TimesheetEntry::truncate();
 
-            $file = $request->file('timesheet');
-            $teamName = $request->input('team_name', 'CTS');
-            $weekStart = $request->input('week_start_date');
-            $weekEnd = $request->input('week_end_date');
+        $file = $request->file('timesheet');
+        $teamName = $request->input('team_name', 'CTS');
+        $weekStart = $request->input('week_start_date');
+        $weekEnd = $request->input('week_end_date');
+        
+        // get original uploaded file name without extension
+        $originalFileName = $file->getClientOriginalName();
+        $cleanFileName = pathinfo($originalFileName, PATHINFO_FILENAME);
 
-            // Get file info
-            $fileExtension = strtolower($file->getClientOriginalExtension());
-            $filePath = $file->getRealPath();
+        // Get file info
+        $fileExtension = strtolower($file->getClientOriginalExtension());
+        $filePath = $file->getRealPath();
 
-            Log::info("Processing file: {$file->getClientOriginalName()}, Extension: {$fileExtension}, MIME: {$file->getMimeType()}");
+        Log::info("Processing file: {$file->getClientOriginalName()}, Extension: {$fileExtension}, MIME: {$file->getMimeType()}");
 
-            $importer = new ZohoTimesheetImport($teamName, $fileExtension);
+        $importer = new ZohoTimesheetImport($teamName, $fileExtension);
 
-            // Detect actual file format and use appropriate driver
-            $driver = $this->detectFileFormat($filePath, $fileExtension, $file->getMimeType());
+        // Detect actual file format and use appropriate driver
+        $driver = $this->detectFileFormat($filePath, $fileExtension, $file->getMimeType());
 
-            Log::info("Using driver: {$driver} for file: {$file->getClientOriginalName()}");
+        Log::info("Using driver: {$driver} for file: {$file->getClientOriginalName()}");
 
-            // Import with detected driver
-            switch ($driver) {
-                case 'xlsx':
-                    Excel::import($importer, $file, null, \Maatwebsite\Excel\Excel::XLSX);
-                    break;
-                case 'xls':
-                    Excel::import($importer, $file, null, \Maatwebsite\Excel\Excel::XLS);
-                    break;
-                case 'csv':
-                    // Configure CSV settings for better compatibility
-                    config(['excel.imports.csv.delimiter' => $this->detectCSVDelimiter($filePath)]);
-                    config(['excel.imports.csv.enclosure' => '"']);
-                    config(['excel.imports.csv.escape' => '\\']);
-                    config(['excel.imports.csv.contiguous' => false]);
-                    config(['excel.imports.csv.input_encoding' => 'UTF-8']);
+        // Import with detected driver
+        switch ($driver) {
+            case 'xlsx':
+                Excel::import($importer, $file, null, \Maatwebsite\Excel\Excel::XLSX);
+                break;
+            case 'xls':
+                Excel::import($importer, $file, null, \Maatwebsite\Excel\Excel::XLS);
+                break;
+            case 'csv':
+                // Configure CSV settings for better compatibility
+                config(['excel.imports.csv.delimiter' => $this->detectCSVDelimiter($filePath)]);
+                config(['excel.imports.csv.enclosure' => '"']);
+                config(['excel.imports.csv.escape' => '\\']);
+                config(['excel.imports.csv.contiguous' => false]);
+                config(['excel.imports.csv.input_encoding' => 'UTF-8']);
 
-                    Excel::import($importer, $file, null, \Maatwebsite\Excel\Excel::CSV);
-                    Log::info("Processing CSV file with detected delimiter");
-                    break;
-                default:
-                    // Fallback: let Excel auto-detect
-                    Log::warning("Using auto-detection for file: {$file->getClientOriginalName()}");
-                    Excel::import($importer, $file);
-            }
+                Excel::import($importer, $file, null, \Maatwebsite\Excel\Excel::CSV);
+                Log::info("Processing CSV file with detected delimiter");
+                break;
+            default:
+                // Fallback: let Excel auto-detect
+                Log::warning("Using auto-detection for file: {$file->getClientOriginalName()}");
+                Excel::import($importer, $file);
+        }
 
-            // Get all entries with calculated fields
-            $entries = TimesheetEntry::all();
-            $calculator = new TimesheetCalculatorService();
+        // Get all entries with calculated fields
+        $entries = TimesheetEntry::all();
+        $calculator = new TimesheetCalculatorService();
 
-            // Calculate all formulas for each entry
-            $entries->each(function ($entry) use ($calculator) {
-                $calculations = $calculator->calculateAllFormulas($entry);
+        // Calculate all formulas for each entry
+        $entries->each(function ($entry) use ($calculator) {
+            $calculations = $calculator->calculateAllFormulas($entry);
 
-                // Update the entry with calculated values
-                $entry->lead_time = $calculations['lead_time'];
-                $entry->cycle_time = $calculations['cycle_time'];
-                $entry->defects_density = $calculations['defects_density'];
-                $entry->weekly_points = $calculations['weekly_points'];
-                $entry->story_point_accuracy = round($calculations['story_point_accuracy'], 2);
-                $entry->release_delay = $calculations['release_delay'];
+            // Update the entry with calculated values
+            $entry->lead_time = $calculations['lead_time'];
+            $entry->cycle_time = $calculations['cycle_time'];
+            $entry->defects_density = $calculations['defects_density'];
+            $entry->weekly_points = $calculations['weekly_points'];
+            $entry->story_point_accuracy = round($calculations['story_point_accuracy'], 2);
+            $entry->release_delay = $calculations['release_delay'];
 
-                $entry->save();
-            });
+            $entry->save();
+        });
 
-            // Get updated entries with calculations
-            $updatedEntries = TimesheetEntry::all();
-            $averages = $calculator->calculateAverages($updatedEntries);
+        // Get updated entries with calculations
+        $updatedEntries = TimesheetEntry::all();
+        $averages = $calculator->calculateAverages($updatedEntries);
 
-            return response()->json([
-                'success' => true,
-                'message' => 'Timesheet uploaded and processed successfully using ' . strtoupper($driver) . ' driver',
-                'data' => [
-                    'total_entries' => $updatedEntries->count(),
-                    'entries' => $updatedEntries,
-                    'averages' => $averages,
-                    'download_available' => true,
-                    'week_start_date' => $weekStart,
-                    'week_end_date' => $weekEnd,
-                    'file_type_processed' => strtoupper($driver)
-                ]
-            ], 200);
-        } catch (\Exception $e) {
-            Log::error("Upload error: " . $e->getMessage());
-            Log::error("Stack trace: " . $e->getTraceAsString());
+        // Instead of saving in Session, return it to the client:
+        return response()->json([
+            'success' => true,
+            'message' => 'Timesheet uploaded and processed successfully using ' . strtoupper($driver) . ' driver',
+            'data' => [
+                'total_entries' => $updatedEntries->count(),
+                'entries' => $updatedEntries,
+                'averages' => $averages,
+                'download_available' => true,
+                'week_start_date' => $weekStart,
+                'week_end_date' => $weekEnd,
+                'file_type_processed' => strtoupper($driver),
+                'imported_filename' => $cleanFileName // <-- send back to frontend
+            ]
+        ], 200);
+    } catch (\Exception $e) {
+        Log::error("Upload error: " . $e->getMessage());
+        Log::error("Stack trace: " . $e->getTraceAsString());
 
+        return response()->json([
+            'success' => false,
+            'message' => 'Error processing timesheet: ' . $e->getMessage(),
+            'debug' => [
+                'file' => $e->getFile(),
+                'line' => $e->getLine(),
+                'trace' => $e->getTraceAsString()
+            ]
+        ], 500);
+    }
+}
+
+   public function downloadFormattedTimesheet(Request $request)
+{
+    try {
+        Log::info("=== downloadFormattedTimesheet() START ===");
+
+        $entries = TimesheetEntry::all();
+        Log::info("Entries fetched. Count: " . $entries->count());
+
+        if ($entries->isEmpty()) {
             return response()->json([
                 'success' => false,
-                'message' => 'Error processing timesheet: ' . $e->getMessage(),
-                'debug' => [
-                    'file' => $e->getFile(),
-                    'line' => $e->getLine(),
-                    'trace' => $e->getTraceAsString()
-                ]
-            ], 500);
+                'message' => 'No timesheet data available to export'
+            ], 404);
         }
+
+        // Get week parameters from request
+        $weekStart = $request->input('week_start_date');
+        $weekEnd = $request->input('week_end_date');
+        
+        // Get the imported filename from request parameter or use default
+        $importedFilename = $request->input('imported_filename', 'Miracle_Makers');
+        
+        // Clean the filename to ensure it's safe for filesystem
+        $cleanImportedFilename = preg_replace('/[^a-zA-Z0-9_-]/', '_', $importedFilename);
+        
+        // Generate the export filename with the imported file prefix
+        $filename = $cleanImportedFilename . '_Weekly_Prod_List_' . date('Y-m-d_His') . '.xlsx';
+        Log::info("Generated filename with imported prefix: " . $filename);
+
+        $export = new FormattedTimesheetExport($entries, $weekStart, $weekEnd);
+
+        Log::info("Starting Excel file generation...");
+
+        // Store the file in storage/app/public/exports directory
+        $filePath = 'exports/' . $filename;
+        Excel::store($export, $filePath, 'public', \Maatwebsite\Excel\Excel::XLSX);
+
+        // Get the full path to the stored file
+        $fullPath = storage_path('app/public/' . $filePath);
+
+        Log::info("Excel file saved to: " . $fullPath);
+
+        // Return JSON response with file information
+        return response()->json([
+            'success' => true,
+            'message' => 'Excel file generated successfully',
+            'data' => [
+                'filename' => $filename,
+                'file_path' => $fullPath,
+                'download_url' => url('storage/' . $filePath), // Public URL for download
+                'file_size' => file_exists($fullPath) ? filesize($fullPath) : 0,
+                'imported_filename_prefix' => $cleanImportedFilename
+            ]
+        ], 200);
+    } catch (\Exception $e) {
+        Log::error("FATAL ERROR in downloadFormattedTimesheet(): " . $e->getMessage());
+        Log::error("Stack trace: " . $e->getTraceAsString());
+
+        return response()->json([
+            'success' => false,
+            'message' => 'Error generating Excel file: ' . $e->getMessage()
+        ], 500);
     }
-
-    public function downloadFormattedTimesheet(Request $request)
-    {
-        try {
-            Log::info("=== downloadFormattedTimesheet() START ===");
-
-            $entries = TimesheetEntry::all();
-            Log::info("Entries fetched. Count: " . $entries->count());
-
-            if ($entries->isEmpty()) {
-                return response()->json([
-                    'success' => false,
-                    'message' => 'No timesheet data available to export'
-                ], 404);
-            }
-
-            // Get week parameters from request
-            $weekStart = $request->input('week_start_date');
-            $weekEnd = $request->input('week_end_date');
-
-            $filename = 'Miracle_Makers_Weekly_Prod_List_' . date('Y-m-d_His') . '.xlsx';
-            Log::info("Generated filename: " . $filename);
-
-            $export = new FormattedTimesheetExport($entries, $weekStart, $weekEnd);
-
-            Log::info("Starting Excel file generation...");
-
-            // Store the file in storage/app/public/exports directory
-            $filePath = 'exports/' . $filename;
-            Excel::store($export, $filePath, 'public', \Maatwebsite\Excel\Excel::XLSX);
-
-            // Get the full path to the stored file
-            $fullPath = storage_path('app/public/' . $filePath);
-
-            Log::info("Excel file saved to: " . $fullPath);
-
-            // Return JSON response with file information
-            return response()->json([
-                'success' => true,
-                'message' => 'Excel file generated successfully',
-                'data' => [
-                    'filename' => $filename,
-                    'file_path' => $fullPath,
-                    'download_url' => url('storage/' . $filePath), // Public URL for download
-                    'file_size' => file_exists($fullPath) ? filesize($fullPath) : 0
-                ]
-            ], 200);
-        } catch (\Exception $e) {
-            Log::error("FATAL ERROR in downloadFormattedTimesheet(): " . $e->getMessage());
-            Log::error("Stack trace: " . $e->getTraceAsString());
-
-            return response()->json([
-                'success' => false,
-                'message' => 'Error generating Excel file: ' . $e->getMessage()
-            ], 500);
-        }
-    }
+}
 
     public function getFormulas()
     {
