@@ -40,7 +40,7 @@ class ZohoTimesheetImport implements ToCollection
         'expected_start_date'  => ['startdate', 'expectedstartdate', 'expected_start_date'],
         'expected_release_date' => ['end_date', 'expectedreleasedate', 'expected_release_date'],
         'actual_start_date'    => ['actualstartdate', 'actual_start_date', 'start_date'], // Use start_date as fallback
-        'actual_release_date'  => ['actualreleasedate', 'actual_release_date', 'completed_on'], // Use completed_on as fallback
+        'actual_release_date'  => [ 'completed_on'], // Use completed_on as fallback
         'completed_on'         => ['completedon', 'completed_on'],
         'created_on'           => ['createdon', 'created_on'],
         'created_by'           => ['createdby', 'created_by'],
@@ -265,16 +265,16 @@ private function isCSVfile(): bool
             $mappingLog[] = "actual_start_date <- start_date (fallback) = '{$mapped['actual_start_date']}'";
         }
 
-        // If actual_release_date is missing, use completed_on or release_date (if available)
-        if (empty($mapped['actual_release_date'])) {
-            if (!empty($mapped['completed_on'])) {
-                $mapped['actual_release_date'] = $mapped['completed_on'];
-                $mappingLog[] = "actual_release_date <- completed_on (fallback) = '{$mapped['actual_release_date']}'";
-            } elseif (!empty($mapped['release_date'])) {
-                $mapped['actual_release_date'] = $mapped['release_date'];
-                $mappingLog[] = "actual_release_date <- release_date (fallback) = '{$mapped['actual_release_date']}'";
-            }
-        }
+// Always set actual_release_date = completed_on (if available)
+// If completed_on is null, actual_release_date stays null (no fallback)
+if (!empty($mapped['completed_on'])) {
+    $mapped['actual_release_date'] = $mapped['completed_on'];
+    $mappingLog[] = "actual_release_date <- completed_on (strict mapping) = '{$mapped['actual_release_date']}'";
+} else {
+    $mapped['actual_release_date'] = null;
+    $mappingLog[] = "actual_release_date <- EMPTY (no completed_on)";
+}
+
 
         // Generate zoho_link if missing
         if (empty($mapped['zoho_link']) && !empty($mapped['item_id']) && !empty($mapped['project_name'])) {

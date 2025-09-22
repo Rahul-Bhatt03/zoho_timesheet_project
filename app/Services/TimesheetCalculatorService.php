@@ -30,7 +30,7 @@ class TimesheetCalculatorService
         if (!$requestedDate || !$releaseDate) {
             return 0;
         }
-return $this->getBusinessDays($requestedDate,$releaseDate);
+        return $this->getBusinessDays($requestedDate, $releaseDate);
         // return $requestedDate->diffInDays($releaseDate);
     }
 
@@ -46,7 +46,7 @@ return $this->getBusinessDays($requestedDate,$releaseDate);
             return 0;
         }
 
-return $this->getBusinessDays($startDate, $releaseDate);
+        return $this->getBusinessDays($startDate, $releaseDate);
     }
 
     /**
@@ -79,10 +79,6 @@ return $this->getBusinessDays($startDate, $releaseDate);
         return 0;
     }
 
-    /**
-     * Weekly Points = Actual Points OR Log Hours Decimal OR Log Hours
-     * Priority: actual_points > log_hours_decimal > log_hours > 0
-     */
     private function calculateWeeklyPoints(Collection $entries): array
     {
         // group by item id and log owner 
@@ -92,11 +88,13 @@ return $this->getBusinessDays($startDate, $releaseDate);
         $weeklyPoints = [];
         foreach ($grouped as $key => $itemEntries) {
             [$itemId, $owner] = explode('|', $key);
-            $sum = $itemEntries->sum('log_hours_decimal');
+            $totalHours = $itemEntries->sum('log_hours');
+            $totalMinutes = $totalHours * 60;
+            $points = $totalMinutes / 240;
             $weeklyPoints[] = [
                 'item_id' => $itemId,
                 'log_owner' => $owner,
-                'weekly_points' => $sum,
+                'weekly_points' => $points,
             ];
         }
         return $weeklyPoints;
@@ -140,11 +138,11 @@ return $this->getBusinessDays($startDate, $releaseDate);
 
         // Expected - Actual (positive = delay, negative = early)
         // return $expectedDate->diffInDays($actualDate, false);
-       if ($actualDate->gte($expectedDate)) {
-        return $this->getBusinessDays($expectedDate, $actualDate);
-    } else {
-        return -$this->getBusinessDays($actualDate, $expectedDate);
-    }
+        if ($actualDate->gte($expectedDate)) {
+            return $this->getBusinessDays($expectedDate, $actualDate);
+        } else {
+            return -$this->getBusinessDays($actualDate, $expectedDate);
+        }
     }
 
     /**
@@ -302,44 +300,88 @@ return $this->getBusinessDays($startDate, $releaseDate);
         return $entry->log_hours_decimal ?? 0;
     }
 
-    public function getExportItemType($entry): string
-    {
-        $reportedBy = strtolower($entry->reported_by ?? '');
-        $itemType = strtolower($entry->item_type ?? '');
+   public function getExportItemType($entry): string
+{
+    $reportedBy = strtolower($entry->reported_by ?? '');
+    $itemType   = strtolower($entry->item_type ?? '');
+    $logType    = strtolower($entry->log_type ?? ''); // to handle offhour by log_type
 
-        // If reported by is "planned"
-        if (strpos($reportedBy, 'planned') !== false) {
+    $isPlanned = strpos($reportedBy, 'planned') !== false;
+
+    // If reported by is planned
+    if ($isPlanned) {
+        // story or task → Planned
+        if (strpos($itemType, 'story') !== false || strpos($itemType, 'task') !== false) {
             return 'Planned';
         }
 
-        // If reported by is "internal team"
-        if (strpos($reportedBy, 'internal team') !== false) {
-            return 'Hot Fix';
-        }
-
-        // If item type is "bug"
+        // bug → Bug
         if (strpos($itemType, 'bug') !== false) {
             return 'Bug';
         }
 
-        // If reported by is not "planned" and item type is "story" or "task"
-        if (strpos($itemType, 'story') !== false || strpos($itemType, 'task') !== false) {
-            return 'New Request';
+        // defect → Defect
+        if (strpos($itemType, 'defect') !== false) {
+            return 'Defect';
         }
 
-        return ucfirst($entry->item_type ??'');
+        // hotfix → Hotfix
+        if (strpos($itemType, 'hotfix') !== false) {
+            return 'Hotfix';
+        }
+
+        // offhour by item_type or log_type → Off Hour
+        if (strpos($itemType, 'offhour') !== false || strpos($logType, 'offhour') !== false) {
+            return 'Off Hour';
+        }
+
+        // fallback
+        return 'Planned';
     }
 
-    public function getBusinessDays(Carbon $startDate , Carbon $endDate):float{
-$days=0;
-$current=$startDate->copy();
-while($current->lte($endDate)){
-    // skip weekend (Saturday=6 and sunday =0)
-    if($current->isWeekend()){
-        $days++;
+    // If reported by is NOT planned
+    // bug → Bug
+    if (strpos($itemType, 'bug') !== false) {
+        return 'Bug';
     }
-    $current->addDay();
+
+    // defect → Defect
+    if (strpos($itemType, 'defect') !== false) {
+        return 'Defect';
+    }
+
+    // hotfix → Hotfix
+    if (strpos($itemType, 'hotfix') !== false) {
+        return 'Hotfix';
+    }
+
+    // story or task → New Request
+    if (strpos($itemType, 'story') !== false || strpos($itemType, 'task') !== false) {
+        return 'New Request';
+    }
+
+    // // internal team → Hot Fix
+    // if (strpos($reportedBy, 'internal team') !== false) {
+    //     return 'Hot Fix';
+    // }
+
+    // fallback — capitalize item_type
+    return ucfirst($entry->item_type ?? '');
 }
-return $days; 
+
+
+
+    public function getBusinessDays(Carbon $startDate, Carbon $endDate): float
+    {
+        $days = 0;
+        $current = $startDate->copy();
+        while ($current->lte($endDate)) {
+            // skip weekend (Saturday=6 and sunday =0)
+            if ($current->isWeekend()) {
+                $days++;
+            }
+            $current->addDay();
+        }
+        return $days;
     }
 }
