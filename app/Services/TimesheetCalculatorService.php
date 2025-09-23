@@ -79,26 +79,36 @@ class TimesheetCalculatorService
         return 0;
     }
 
-    private function calculateWeeklyPoints(Collection $entries): array
-    {
-        // group by item id and log owner 
-        $grouped = $entries->groupBy(function ($entry) {
-            return $entry->item_id . '|' . $entry->log_owner;
-        });
-        $weeklyPoints = [];
-        foreach ($grouped as $key => $itemEntries) {
-            [$itemId, $owner] = explode('|', $key);
-            $totalHours = $itemEntries->sum('log_hours');
-            $totalMinutes = $totalHours * 60;
-            $points = $totalMinutes / 240;
-            $weeklyPoints[] = [
-                'item_id' => $itemId,
-                'log_owner' => $owner,
-                'weekly_points' => $points,
-            ];
-        }
-        return $weeklyPoints;
+   private function calculateWeeklyPoints(Collection $entries): array
+{
+    // Group by item_id and log_owner combination
+    $grouped = $entries->groupBy(function ($entry) {
+        return $entry->item_id . '|' . $entry->log_owner;
+    });
+    
+    $weeklyPoints = [];
+    
+    foreach ($grouped as $key => $itemEntries) {
+        [$itemId, $owner] = explode('|', $key);
+        
+        // Sum all log hours for this item_id + log_owner combination
+        $totalHours = $itemEntries->sum('log_hours_decimal'); 
+
+        $totalMinutes = $totalHours * 60;
+        
+        // Convert minutes to points (divide by 240)
+        $points = $totalMinutes / 240;
+        
+        $weeklyPoints[] = [
+            'item_id' => $itemId,
+            'log_owner' => $owner,
+            'total_hours' => $totalHours, // Added for debugging
+            'weekly_points' => $points,
+        ];
     }
+    
+    return $weeklyPoints;
+}
 
     //  * Story Point Accuracy = (Estimated Points / Actual Points) * 100
     //  * If estimated is 0 or actual is 0, return 0

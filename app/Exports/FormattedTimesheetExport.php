@@ -69,30 +69,46 @@ class FormattedTimesheetExport implements FromArray, WithTitle, WithEvents
     }
 
     /**
-     * Group entries by item_id and log_owner to avoid duplicates
-     */
-    private function groupEntriesByItemAndOwner($entries)
-    {
-        $grouped = [];
+ * Group entries by item_id and log_owner to avoid duplicates and calculate weekly points correctly
+ */
+private function groupEntriesByItemAndOwner($entries)
+{
+    $grouped = [];
+    
+    foreach ($entries as $entry) {
+        $key = ($entry->item_id ?? 'no_id') . '_' . ($entry->log_owner ?? 'no_owner');
         
-        foreach ($entries as $entry) {
-            $key = ($entry->item_id ?? 'no_id') . '_' . ($entry->log_owner ?? 'no_owner');
+        if (!isset($grouped[$key])) {
+            $grouped[$key] = clone $entry;
+            // Initialize log_hours_decimal if not set
+            $grouped[$key]->log_hours_decimal = $entry->log_hours_decimal ?? 0;
+        } else {
+            // Sum the log_hours_decimal for same item_id + log_owner
+            $existing = $grouped[$key];
+            $existing->log_hours_decimal = ($existing->log_hours_decimal ?? 0) + ($entry->log_hours_decimal ?? 0);
             
-            if (!isset($grouped[$key])) {
-                $grouped[$key] = $entry;
-            } else {
-                // Merge the actual_points and weekly_points if multiple entries exist
-                $existing = $grouped[$key];
-                $existing->actual_points = ($existing->actual_points ?? 0) + ($entry->actual_points ?? 0);
-                
-                // Update other fields if they're empty in the existing entry
-                $existing->remarks = $existing->remarks ?: $entry->remarks;
-                $existing->zoho_link = $existing->zoho_link ?: $entry->zoho_link;
-            }
+            // Also sum other numeric fields if needed
+            $existing->actual_points = ($existing->actual_points ?? 0) + ($entry->actual_points ?? 0);
+            
+            // Update other fields if they're empty in the existing entry
+            $existing->remarks = $existing->remarks ?: $entry->remarks;
+            $existing->zoho_link = $existing->zoho_link ?: $entry->zoho_link;
         }
-        
-        return collect(array_values($grouped));
     }
+    
+    return collect(array_values($grouped));
+}
+
+/**
+ * Calculate weekly points for a grouped entry (contains summed log_hours_decimal)
+ */
+private function calculateWeeklyPointsForGroupedEntry($groupedEntry): float
+{
+    $totalHours = $groupedEntry->log_hours_decimal ?? 0;
+    $totalMinutes = $totalHours * 60;
+    return $totalMinutes / 240;
+}
+
 
     /**
      * Check if an item type is a meeting
@@ -171,97 +187,99 @@ class FormattedTimesheetExport implements FromArray, WithTitle, WithEvents
             'Release delay'
         ];
 
-        // Data rows - completed items only (grouped by item_id and log_owner)
-        $completedEntries = $this->entries->filter(function ($entry) {
-            $completedOn = $entry->release_date ? Carbon::parse($entry->release_date) : null;
+      // Data rows - completed items only (grouped by item_id and log_owner)
+$completedEntries = $this->entries->filter(function ($entry) {
+    $completedOn = $entry->release_date ? Carbon::parse($entry->release_date) : null;
 
-            // If we have week data, check if task was completed within the week
-            if ($this->weekStart && $this->weekEnd && $completedOn) {
-                return $completedOn->between($this->weekStart, $this->weekEnd) &&
-                    !is_null($entry->actual_release_date);
-            }
+    // If we have week data, check if task was completed within the week
+    if ($this->weekStart && $this->weekEnd && $completedOn) {
+        return $completedOn->between($this->weekStart, $this->weekEnd) &&
+            !is_null($entry->actual_release_date);
+    }
 
-            // Fallback to original logic if no week data provided
-            return !is_null($entry->actual_release_date);
-        });
+    // Fallback to original logic if no week data provided
+    return !is_null($entry->actual_release_date);
+});
 
-        // Group completed entries to avoid duplicates
-        $groupedCompletedEntries = $this->groupEntriesByItemAndOwner($completedEntries);
+// Group completed entries to avoid duplicates and sum hours
+$groupedCompletedEntries = $this->groupEntriesByItemAndOwner($completedEntries);
 
-        // Separate meetings and regular items
-        $regularItems = $groupedCompletedEntries->filter(function ($entry) {
-            $exportItemType = $this->calculator->getExportItemType($entry);
-            return !$this->isMeetingType($exportItemType) && !$this->isMeetingItem($entry->item_name);
-        });
+// Separate meetings and regular items
+$regularItems = $groupedCompletedEntries->filter(function ($entry) {
+    $exportItemType = $this->calculator->getExportItemType($entry);
+    return !$this->isMeetingType($exportItemType) && !$this->isMeetingItem($entry->item_name);
+});
 
-        $meetingItems = $groupedCompletedEntries->filter(function ($entry) {
-            $exportItemType = $this->calculator->getExportItemType($entry);
-            return $this->isMeetingType($exportItemType) || $this->isMeetingItem($entry->item_name);
-        });
+$meetingItems = $groupedCompletedEntries->filter(function ($entry) {
+    $exportItemType = $this->calculator->getExportItemType($entry);
+    return $this->isMeetingType($exportItemType) || $this->isMeetingItem($entry->item_name);
+});
 
-        // Add regular items first
-        foreach ($regularItems as $entry) {
-            $calculations = $this->calculator->calculateAllFormulas($entry);
-            $exportItemType = $this->calculator->getExportItemType($entry);
-            
-            // Extract numeric weekly points
-            $weeklyPointsSum = $this->getWeeklyPointsSum($calculations['weekly_points']);
+// Add regular items first
+foreach ($regularItems as $entry) {
+    // Calculate other formulas (lead time, cycle time, etc.) normally
+    $calculations = $this->calculator->calculateAllFormulas($entry);
+    $exportItemType = $this->calculator->getExportItemType($entry);
+    
+    // Calculate weekly points correctly for grouped entry
+    $weeklyPoints = $this->calculateWeeklyPointsForGroupedEntry($entry);
 
-            $data[] = [
-                $entry->epic,
-                $entry->item_name ?? '',
-                $entry->item_detail ?? '',
-                $exportItemType,
-                $entry->log_owner ?? $entry->team_name ?? '',
-                $entry->requested_date ? $entry->requested_date->format('M j') : '',
-                $entry->expected_start_date ? $entry->expected_start_date->format('M j') : '',
-                $entry->expected_release_date ? $entry->expected_release_date->format('M j') : '',
-                $entry->actual_start_date ? $entry->actual_start_date->format('M j') : '',
-                $entry->actual_release_date ? $entry->actual_release_date->format('M j') : '',
-                $calculations['lead_time'],
-                $calculations['cycle_time'],
-                $calculations['defects_density'],
-                $entry->estimated_points ?? 0,
-                $entry->actual_points ?? 0,
-                number_format($weeklyPointsSum, 2),
-                number_format($calculations['story_point_accuracy'], 2),
-                $entry->remarks ?? '',
-                $entry->zoho_link ?? '',
-                $calculations['release_delay']
-            ];
-        }
+    $data[] = [
+        $entry->epic,
+        $entry->item_name ?? '',
+        $entry->item_detail ?? '',
+        $exportItemType,
+        $entry->log_owner ?? $entry->team_name ?? '',
+        $entry->requested_date ? $entry->requested_date->format('M j') : '',
+        $entry->expected_start_date ? $entry->expected_start_date->format('M j') : '',
+        $entry->expected_release_date ? $entry->expected_release_date->format('M j') : '',
+        $entry->actual_start_date ? $entry->actual_start_date->format('M j') : '',
+        $entry->actual_release_date ? $entry->actual_release_date->format('M j') : '',
+        $calculations['lead_time'],
+        $calculations['cycle_time'],
+        $calculations['defects_density'],
+        $entry->estimated_points ?? 0,
+        $entry->actual_points ?? 0,
+        number_format($weeklyPoints, 2), // Use the correctly calculated weekly points
+        number_format($calculations['story_point_accuracy'], 2),
+        $entry->remarks ?? '',
+        $entry->zoho_link ?? '',
+        $calculations['release_delay']
+    ];
+}
 
-        // Add meeting items after regular items
-        foreach ($meetingItems as $entry) {
-            $calculations = $this->calculator->calculateAllFormulas($entry);
-            $exportItemType = $this->calculator->getExportItemType($entry);
-            
-            // Extract numeric weekly points
-            $weeklyPointsSum = $this->getWeeklyPointsSum($calculations['weekly_points']);
+// Add meeting items after regular items
+foreach ($meetingItems as $entry) {
+    // Calculate other formulas (lead time, cycle time, etc.) normally
+    $calculations = $this->calculator->calculateAllFormulas($entry);
+    $exportItemType = $this->calculator->getExportItemType($entry);
+    
+    // Calculate weekly points correctly for grouped entry
+    $weeklyPoints = $this->calculateWeeklyPointsForGroupedEntry($entry);
 
-            $data[] = [
-                $entry->epic,
-                $entry->item_name ?? '',
-                $entry->item_detail ?? '',
-                $exportItemType,
-                $entry->log_owner ?? $entry->team_name ?? '',
-                $entry->requested_date ? $entry->requested_date->format('M j') : '',
-                $entry->expected_start_date ? $entry->expected_start_date->format('M j') : '',
-                $entry->expected_release_date ? $entry->expected_release_date->format('M j') : '',
-                $entry->actual_start_date ? $entry->actual_start_date->format('M j') : '',
-                $entry->actual_release_date ? $entry->actual_release_date->format('M j') : '',
-                $calculations['lead_time'],
-                $calculations['cycle_time'],
-                $calculations['defects_density'],
-                $entry->estimated_points ?? 0,
-                $entry->actual_points ?? 0,
-                number_format($weeklyPointsSum, 2),
-                number_format($calculations['story_point_accuracy'], 2),
-                $entry->remarks ?? '',
-                $entry->zoho_link ?? '',
-                $calculations['release_delay']
-            ];
-        }
+    $data[] = [
+        $entry->epic,
+        $entry->item_name ?? '',
+        $entry->item_detail ?? '',
+        $exportItemType,
+        $entry->log_owner ?? $entry->team_name ?? '',
+        $entry->requested_date ? $entry->requested_date->format('M j') : '',
+        $entry->expected_start_date ? $entry->expected_start_date->format('M j') : '',
+        $entry->expected_release_date ? $entry->expected_release_date->format('M j') : '',
+        $entry->actual_start_date ? $entry->actual_start_date->format('M j') : '',
+        $entry->actual_release_date ? $entry->actual_release_date->format('M j') : '',
+        $calculations['lead_time'],
+        $calculations['cycle_time'],
+        $calculations['defects_density'],
+        $entry->estimated_points ?? 0,
+        $entry->actual_points ?? 0,
+        number_format($weeklyPoints, 2), // Use the correctly calculated weekly points
+        number_format($calculations['story_point_accuracy'], 2),
+        $entry->remarks ?? '',
+        $entry->zoho_link ?? '',
+        $calculations['release_delay']
+    ];
+}
 
         // Totals row
         $data[] = [
@@ -319,38 +337,63 @@ class FormattedTimesheetExport implements FromArray, WithTitle, WithEvents
 
 
         // Group in-progress entries to avoid duplicates
-        $groupedInProgressEntries = $this->groupEntriesByItemAndOwner($inProgressEntries);
+      $inProgressEntries = $this->entries->filter(function ($entry) {
+    $completedOn = $entry->actual_release_date ? Carbon::parse($entry->actual_release_date) : null;
+    $status = strtolower($entry->status ?? '');
+    $logType = strtolower($entry->log_type ?? '');
 
-        foreach ($groupedInProgressEntries as $entry) {
-            $calculations = $this->calculator->calculateAllFormulas($entry);
-            $exportItemType = $this->calculator->getExportItemType($entry);
-            
-            // Extract numeric weekly points
-            $weeklyPointsSum = $this->getWeeklyPointsSum($calculations['weekly_points']);
+    // Exclude meetings
+    if ($logType === 'meeting') {
+        return false;
+    }
 
-            $data[] = [
-                $entry->epic,
-                $entry->item_name ?? '',
-                $entry->item_detail ?? '',
-                $exportItemType,
-                $entry->log_owner ?? $entry->team_name ?? '',
-                $entry->requested_date ? $entry->requested_date->format('M j') : '',
-                $entry->expected_start_date ? $entry->expected_start_date->format('M j') : '',
-                $entry->expected_release_date ? $entry->expected_release_date->format('M j') : '',
-                $entry->actual_start_date ? $entry->actual_start_date->format('M j') : '',
-                $entry->actual_release_date ? $entry->actual_release_date->format('M j') : '',
-                $calculations['lead_time'],
-                $calculations['cycle_time'],
-                $calculations['defects_density'],
-                $entry->estimated_points ?? 0,
-                $entry->actual_points ?? 0,
-                number_format($weeklyPointsSum, 2),
-                number_format($calculations['story_point_accuracy'], 2),
-                $entry->remarks ?? '',
-                $entry->zoho_link ?? '',
-                $calculations['release_delay']
-            ];
-        }
+    // In-progress if no completion date or not in current week
+    if (!$completedOn || ($this->weekStart && $this->weekEnd && !$completedOn->between($this->weekStart, $this->weekEnd))) {
+        return true;
+    }
+
+    // Also include items with status inprogress or on hold
+    if (in_array($status, ['inprogress', 'on hold'])) {
+        return true;
+    }
+
+    return false;
+});
+
+// Group in-progress entries to avoid duplicates and sum hours
+$groupedInProgressEntries = $this->groupEntriesByItemAndOwner($inProgressEntries);
+
+foreach ($groupedInProgressEntries as $entry) {
+    // Calculate other formulas normally
+    $calculations = $this->calculator->calculateAllFormulas($entry);
+    $exportItemType = $this->calculator->getExportItemType($entry);
+    
+    // Calculate weekly points correctly for grouped entry
+    $weeklyPoints = $this->calculateWeeklyPointsForGroupedEntry($entry);
+
+    $data[] = [
+        $entry->epic,
+        $entry->item_name ?? '',
+        $entry->item_detail ?? '',
+        $exportItemType,
+        $entry->log_owner ?? $entry->team_name ?? '',
+        $entry->requested_date ? $entry->requested_date->format('M j') : '',
+        $entry->expected_start_date ? $entry->expected_start_date->format('M j') : '',
+        $entry->expected_release_date ? $entry->expected_release_date->format('M j') : '',
+        $entry->actual_start_date ? $entry->actual_start_date->format('M j') : '',
+        $entry->actual_release_date ? $entry->actual_release_date->format('M j') : '',
+        $calculations['lead_time'],
+        $calculations['cycle_time'],
+        $calculations['defects_density'],
+        $entry->estimated_points ?? 0,
+        $entry->actual_points ?? 0,
+        number_format($weeklyPoints, 2), // Use the correctly calculated weekly points
+        number_format($calculations['story_point_accuracy'], 2),
+        $entry->remarks ?? '',
+        $entry->zoho_link ?? '',
+        $calculations['release_delay']
+    ];
+}
 
         // Empty rows before member-wise section
         $data[] = array_fill(0, 20, '');
