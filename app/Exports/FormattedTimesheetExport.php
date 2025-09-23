@@ -235,16 +235,16 @@ foreach ($regularItems as $entry) {
         $entry->expected_release_date ? $entry->expected_release_date->format('M j') : '',
         $entry->actual_start_date ? $entry->actual_start_date->format('M j') : '',
         $entry->actual_release_date ? $entry->actual_release_date->format('M j') : '',
-        $calculations['lead_time'],
-        $calculations['cycle_time'],
+        $calculations['lead_time']??0,
+        $calculations['cycle_time']??0,
         $calculations['defects_density'],
         $entry->estimated_points ?? 0,
-        $entry->actual_points ?? 0,
-        number_format($weeklyPoints, 2), // Use the correctly calculated weekly points
+      number_format($weeklyPoints, 2), //actual_points
+        number_format($weeklyPoints, 2), //weekly_points
         number_format($calculations['story_point_accuracy'], 2),
         $entry->remarks ?? '',
         $entry->zoho_link ?? '',
-        $calculations['release_delay']
+        $calculations['release_delay']??0
     ];
 }
 
@@ -268,16 +268,16 @@ foreach ($meetingItems as $entry) {
         $entry->expected_release_date ? $entry->expected_release_date->format('M j') : '',
         $entry->actual_start_date ? $entry->actual_start_date->format('M j') : '',
         $entry->actual_release_date ? $entry->actual_release_date->format('M j') : '',
-        $calculations['lead_time'],
-        $calculations['cycle_time'],
+        $calculations['lead_time']??0,
+        $calculations['cycle_time']??0,
         $calculations['defects_density'],
         $entry->estimated_points ?? 0,
-        $entry->actual_points ?? 0,
+        number_format($weeklyPoints, 2),  //actual point
         number_format($weeklyPoints, 2), // Use the correctly calculated weekly points
         number_format($calculations['story_point_accuracy'], 2),
         $entry->remarks ?? '',
         $entry->zoho_link ?? '',
-        $calculations['release_delay']
+        $calculations['release_delay']??0
     ];
 }
 
@@ -293,8 +293,8 @@ foreach ($meetingItems as $entry) {
             '',
             '',
             '',
-            number_format($this->averages['average_lead_time'], 2),
-            number_format($this->averages['average_cycle_time'], 2),
+            number_format($this->averages['average_lead_time']??0, 2),
+            number_format($this->averages['average_cycle_time']??0, 2),
             number_format($this->averages['average_defects_density'], 2),
             number_format($this->averages['total_estimated_points'], 0),
             number_format($this->averages['total_actual_points'], 0),
@@ -302,7 +302,7 @@ foreach ($meetingItems as $entry) {
             number_format($this->averages['average_story_point_accuracy'], 2),
             '',
             '',
-            number_format($this->averages['average_release_delay'], 2)
+            number_format($this->averages['average_release_delay']??0, 2)
         ];
 
         // Empty rows
@@ -382,16 +382,16 @@ foreach ($groupedInProgressEntries as $entry) {
         $entry->expected_release_date ? $entry->expected_release_date->format('M j') : '',
         $entry->actual_start_date ? $entry->actual_start_date->format('M j') : '',
         $entry->actual_release_date ? $entry->actual_release_date->format('M j') : '',
-        $calculations['lead_time'],
-        $calculations['cycle_time'],
+        $calculations['lead_time']??0,
+        $calculations['cycle_time']??0,
         $calculations['defects_density'],
         $entry->estimated_points ?? 0,
-        $entry->actual_points ?? 0,
+     number_format($weeklyPoints, 2),  //actual point
         number_format($weeklyPoints, 2), // Use the correctly calculated weekly points
         number_format($calculations['story_point_accuracy'], 2),
         $entry->remarks ?? '',
         $entry->zoho_link ?? '',
-        $calculations['release_delay']
+        $calculations['release_delay']??0
     ];
 }
 

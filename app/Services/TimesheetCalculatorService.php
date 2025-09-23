@@ -19,8 +19,9 @@ class TimesheetCalculatorService
         ];
     }
 
-    /**
-     * Lead Time = Actual Release Date - Requested Date (in days)
+   /**
+     * Lead Time = NETWORKDAYS.INTL(Requested Date, Actual Release Date)
+     * Equivalent to Excel's NETWORKDAYS.INTL function
      */
     private function calculateLeadTime($entry): float
     {
@@ -30,12 +31,13 @@ class TimesheetCalculatorService
         if (!$requestedDate || !$releaseDate) {
             return 0;
         }
-        return $this->getBusinessDays($requestedDate, $releaseDate);
-        // return $requestedDate->diffInDays($releaseDate);
+
+        return $this->networkDays($requestedDate, $releaseDate);
     }
 
     /**
-     * Cycle Time = Actual Release Date - Actual Start Date (in days)
+     * Cycle Time = NETWORKDAYS.INTL(Actual Start Date, Actual Release Date)
+     * Equivalent to Excel's NETWORKDAYS.INTL function
      */
     private function calculateCycleTime($entry): float
     {
@@ -46,38 +48,102 @@ class TimesheetCalculatorService
             return 0;
         }
 
-        return $this->getBusinessDays($startDate, $releaseDate);
+        return $this->networkDays($startDate, $releaseDate);
     }
+
+     /**
+     * Equivalent to Excel's NETWORKDAYS.INTL function
+     * Calculates business days between two dates (excluding weekends)
+     * This matches Excel's behavior exactly
+     */
+    private function networkDays(Carbon $startDate, Carbon $endDate): float
+    {
+        // If end date is before start date, return negative
+        if ($endDate->lt($startDate)) {
+            return -$this->networkDays($endDate, $startDate);
+        }
+
+        // If same date, return 0 (Excel behavior)
+        if ($startDate->isSameDay($endDate)) {
+            return 1;
+        }
+
+        // Use Carbon's diffInWeekdays which excludes weekends
+        // Add 1 to include the start date like Excel does
+    return $startDate->diffInWeekdays($endDate) + 1;
+    }
+
+
 
     /**
      * Defects Density = 1 if item_type is BUG, 0 otherwise
      */
-    private function calculateDefectsDensity($entry): float
-    {
-        $reportedBy = strtolower($entry->reported_by ?? '');
-        $itemType = strtolower($entry->item_type ?? '');
+   /**
+ * Defects Density = 1 if item_type is Bug/Defect/Hotfix, 0 for Planned/New Request/Off Hour
+ */
+private function calculateDefectsDensity($entry): float
+{
+    $reportedBy = strtolower($entry->reported_by ?? '');
+    $itemType   = strtolower($entry->item_type ?? '');
+    $logType    = strtolower($entry->log_type ?? ''); // to handle offhour by log_type
 
-        //   if reported by is plannend 
-        if (strpos($reportedBy, 'planned') !== false) {
+    $isPlanned = strpos($reportedBy, 'planned') !== false;
+
+    // If reported by is planned
+    if ($isPlanned) {
+        // story or task → Planned = 0
+        if (strpos($itemType, 'story') !== false || strpos($itemType, 'task') !== false) {
             return 0;
         }
-        // If reported by is "internal team"
-        if (strpos($reportedBy, 'internal team') !== false) {
-            return 1;
-        }
 
-        // If item type is "bug"
+        // bug → Bug = 1
         if (strpos($itemType, 'bug') !== false) {
             return 1;
         }
 
-        // If reported by is not "planned" and item type is "story" or "task"
-        if (strpos($itemType, 'story') !== false || strpos($itemType, 'task') !== false) {
+        // defect → Defect = 1
+        if (strpos($itemType, 'defect') !== false) {
             return 1;
         }
 
+        // hotfix → Hotfix = 1
+        if (strpos($itemType, 'hotfix') !== false) {
+            return 1;
+        }
+
+        // offhour by item_type or log_type → Off Hour = 0
+        if (strpos($itemType, 'offhour') !== false || strpos($logType, 'offhour') !== false) {
+            return 0;
+        }
+
+        // fallback = 0
         return 0;
     }
+
+    // If reported by is NOT planned
+    // bug → Bug = 1
+    if (strpos($itemType, 'bug') !== false) {
+        return 1;
+    }
+
+    // defect → Defect = 1
+    if (strpos($itemType, 'defect') !== false) {
+        return 1;
+    }
+
+    // hotfix → Hotfix = 1
+    if (strpos($itemType, 'hotfix') !== false) {
+        return 1;
+    }
+
+    // story or task → New Request = 0
+    if (strpos($itemType, 'story') !== false || strpos($itemType, 'task') !== false) {
+        return 0;
+    }
+
+    // fallback = 0
+    return 0;
+}
 
    private function calculateWeeklyPoints(Collection $entries): array
 {
@@ -128,14 +194,14 @@ class TimesheetCalculatorService
                 $totalAccuracy += $accuracy;
                 $count++;
             }
-        }
+        } 
 
         return $count > 0 ? $totalAccuracy / $count : 0;
     }
 
     /**
-     * Release Delay = Actual Release Date - Expected Release Date (in days)
-     * Positive number means delay, negative means early
+     * Release Delay = Actual Release Date - Expected Release Date (in business days)
+     * Updated to use networkDays instead of getBusinessDays
      */
     private function calculateReleaseDelay($entry): float
     {
@@ -146,13 +212,21 @@ class TimesheetCalculatorService
             return 0;
         }
 
-        // Expected - Actual (positive = delay, negative = early)
-        // return $expectedDate->diffInDays($actualDate, false);
+        // Use networkDays for consistency with Lead Time and Cycle Time
         if ($actualDate->gte($expectedDate)) {
-            return $this->getBusinessDays($expectedDate, $actualDate);
+            return $this->networkDays($expectedDate, $actualDate);
         } else {
-            return -$this->getBusinessDays($actualDate, $expectedDate);
+            return -$this->networkDays($actualDate, $expectedDate);
         }
+    }
+
+    /**
+     * Updated getBusinessDays method - now uses networkDays logic
+     * This maintains backward compatibility while using correct calculation
+     */
+    public function getBusinessDays(Carbon $startDate, Carbon $endDate): float
+    {
+        return $this->networkDays($startDate, $endDate);
     }
 
     /**
@@ -379,19 +453,4 @@ class TimesheetCalculatorService
     return ucfirst($entry->item_type ?? '');
 }
 
-
-
-    public function getBusinessDays(Carbon $startDate, Carbon $endDate): float
-    {
-        $days = 0;
-        $current = $startDate->copy();
-        while ($current->lte($endDate)) {
-            // skip weekend (Saturday=6 and sunday =0)
-            if ($current->isWeekend()) {
-                $days++;
-            }
-            $current->addDay();
-        }
-        return $days;
-    }
 }
