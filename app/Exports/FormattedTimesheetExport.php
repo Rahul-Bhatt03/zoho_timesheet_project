@@ -295,36 +295,28 @@ class FormattedTimesheetExport implements FromArray, WithTitle, WithEvents
         $data[] = ['In progress', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', ''];
 
         $inProgressEntries = $this->entries->filter(function ($entry) {
-            $expectedReleaseDate = $entry->expected_release_date ? Carbon::parse($entry->expected_release_date) : null;
-            $actualReleaseDate = $entry->actual_release_date ? Carbon::parse($entry->actual_release_date) : null;
-            
-            // Skip meeting items from in-progress section
-            $exportItemType = $this->calculator->getExportItemType($entry);
-            if ($this->isMeetingType($exportItemType) || $this->isMeetingItem($entry->item_name)) {
+            $completedOn = $entry->actual_release_date ? Carbon::parse($entry->actual_release_date) : null;
+            $status = strtolower($entry->status ?? '');
+            $logType = strtolower($entry->log_type ?? '');
+
+            // Exclude meetings
+            if ($logType === 'meeting') {
                 return false;
             }
 
-            // If no actual release date, it's in progress
-            if (is_null($actualReleaseDate)) {
+            // In-progress if no completion date or not in current week
+            if (!$completedOn || ($this->weekStart && $this->weekEnd && !$completedOn->between($this->weekStart, $this->weekEnd))) {
                 return true;
             }
 
-            // If expected release date is before actual release date, it's delayed (in progress when it should have been done)
-            if ($expectedReleaseDate && $actualReleaseDate && $expectedReleaseDate->lt($actualReleaseDate)) {
-                return true;
-            }
-
-            // If we have week data, show as in-progress if NOT completed within the week
-            if ($this->weekStart && $this->weekEnd) {
-                $completedOn = $entry->release_date ? Carbon::parse($entry->release_date) : null;
-                if ($completedOn) {
-                    return !$completedOn->between($this->weekStart, $this->weekEnd);
-                }
+            // Also include items with status inprogress or on hold
+            if (in_array($status, ['inprogress', 'on hold'])) {
                 return true;
             }
 
             return false;
         });
+
 
         // Group in-progress entries to avoid duplicates
         $groupedInProgressEntries = $this->groupEntriesByItemAndOwner($inProgressEntries);
