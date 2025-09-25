@@ -40,7 +40,7 @@ class ZohoTimesheetImport implements ToCollection
         'expected_start_date'  => ['startdate', 'expectedstartdate', 'expected_start_date'],
         'expected_release_date' => ['end_date', 'expectedreleasedate', 'expected_release_date'],
         'actual_start_date'    => ['actualstartdate', 'actual_start_date', 'start_date'], // Use start_date as fallback
-        'actual_release_date'  => [ 'completed_on'], // Use completed_on as fallback
+        'actual_release_date'  => ['completedon', 'completed_on'],
         'completed_on'         => ['completedon', 'completed_on'],
         'created_on'           => ['createdon', 'created_on'],
         'created_by'           => ['createdby', 'created_by'],
@@ -81,7 +81,7 @@ class ZohoTimesheetImport implements ToCollection
 
 private function isCSVfile(): bool
 {
-    return $this->fileExtension === 'csv' || 
+    return $this->fileExtension === 'csv' ||
            (isset($_FILES) && strpos(current($_FILES)['type'] ?? '', 'csv') !== false);
 }
 
@@ -347,7 +347,7 @@ if (!empty($mapped['completed_on'])) {
                 $parsed = Carbon::createFromFormat('d/M/Y h:i A', $date);
                 Log::debug("Parsed with format 'd/M/Y h:i A': " . $parsed->format('Y-m-d H:i:s'));
             }
-            // Handle format: 01/Jul/2025 08:23 PM  
+            // Handle format: 01/Jul/2025 08:23 PM
             elseif (preg_match('/(\d{2})\/([a-zA-Z]{3})\/(\d{4})\s+(\d{1,2}):(\d{2})\s+(AM|PM)/', $date)) {
                 $parsed = Carbon::createFromFormat('d/M/Y g:i A', $date);
                 Log::debug("Parsed with format 'd/M/Y g:i A': " . $parsed->format('Y-m-d H:i:s'));
@@ -426,7 +426,7 @@ if (!empty($mapped['completed_on'])) {
             }
         }
 
-        // secondary check :looking for multiple header terms across the row to catch cases where column order might vary 
+        // secondary check :looking for multiple header terms across the row to catch cases where column order might vary
         $headerTerms = [
             'item',
             'name',

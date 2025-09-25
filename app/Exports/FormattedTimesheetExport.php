@@ -59,12 +59,12 @@ class FormattedTimesheetExport implements FromArray, WithTitle, WithEvents
         if (!is_array($weeklyPointsArray)) {
             return (float) $weeklyPointsArray;
         }
-        
+
         $sum = 0;
         foreach ($weeklyPointsArray as $weeklyPoint) {
             $sum += $weeklyPoint['weekly_points'] ?? 0;
         }
-        
+
         return $sum;
     }
 
@@ -74,10 +74,10 @@ class FormattedTimesheetExport implements FromArray, WithTitle, WithEvents
 private function groupEntriesByItemAndOwner($entries)
 {
     $grouped = [];
-    
+
     foreach ($entries as $entry) {
         $key = ($entry->item_id ?? 'no_id') . '_' . ($entry->log_owner ?? 'no_owner');
-        
+
         if (!isset($grouped[$key])) {
             $grouped[$key] = clone $entry;
             // Initialize log_hours_decimal if not set
@@ -86,16 +86,16 @@ private function groupEntriesByItemAndOwner($entries)
             // Sum the log_hours_decimal for same item_id + log_owner
             $existing = $grouped[$key];
             $existing->log_hours_decimal = ($existing->log_hours_decimal ?? 0) + ($entry->log_hours_decimal ?? 0);
-            
+
             // Also sum other numeric fields if needed
             $existing->actual_points = ($existing->actual_points ?? 0) + ($entry->actual_points ?? 0);
-            
+
             // Update other fields if they're empty in the existing entry
             $existing->remarks = $existing->remarks ?: $entry->remarks;
             $existing->zoho_link = $existing->zoho_link ?: $entry->zoho_link;
         }
     }
-    
+
     return collect(array_values($grouped));
 }
 
@@ -126,13 +126,13 @@ private function calculateWeeklyPointsForGroupedEntry($groupedEntry): float
     {
         $meetingKeywords = ['standup', 'meeting', 'demo', 'discussion', 'stand-up'];
         $itemNameLower = strtolower($itemName ?? '');
-        
+
         foreach ($meetingKeywords as $keyword) {
             if (strpos($itemNameLower, $keyword) !== false) {
                 return true;
             }
         }
-        
+
         return false;
     }
 
@@ -217,10 +217,10 @@ $meetingItems = $groupedCompletedEntries->filter(function ($entry) {
 
 // Add regular items first
 foreach ($regularItems as $entry) {
-    // Calculate other formulas (lead time, cycle time, etc.) normally
-    $calculations = $this->calculator->calculateAllFormulas($entry);
+    $isInProgress = empty($entry->actual_release_date); // detect unfinished
+    $calculations = $this->calculator->calculateAllFormulas($entry, $isInProgress);
     $exportItemType = $this->calculator->getExportItemType($entry);
-    
+
     // Calculate weekly points correctly for grouped entry
     $weeklyPoints = $this->calculateWeeklyPointsForGroupedEntry($entry);
 
@@ -235,25 +235,26 @@ foreach ($regularItems as $entry) {
         $entry->expected_release_date ? $entry->expected_release_date->format('M j') : '',
         $entry->actual_start_date ? $entry->actual_start_date->format('M j') : '',
         $entry->actual_release_date ? $entry->actual_release_date->format('M j') : '',
-        $calculations['lead_time']??0,
-        $calculations['cycle_time']??0,
-        $calculations['defects_density'],
+        $calculations['lead_time'] ?? null,
+        $calculations['cycle_time'] ?? null,
+        $calculations['defects_density'] ?? null,
         $entry->estimated_points ?? 0,
-      number_format($weeklyPoints, 2), //actual_points
-        number_format($weeklyPoints, 2), //weekly_points
-        number_format($calculations['story_point_accuracy'], 2),
+        number_format($weeklyPoints, 2),
+        number_format($weeklyPoints, 2),
+        number_format($calculations['story_point_accuracy'] ?? 0, 2),
         $entry->remarks ?? '',
         $entry->zoho_link ?? '',
-        $calculations['release_delay']??0
+        $calculations['release_delay'] ?? null
     ];
 }
+
 
 // Add meeting items after regular items
 foreach ($meetingItems as $entry) {
     // Calculate other formulas (lead time, cycle time, etc.) normally
     $calculations = $this->calculator->calculateAllFormulas($entry);
     $exportItemType = $this->calculator->getExportItemType($entry);
-    
+
     // Calculate weekly points correctly for grouped entry
     $weeklyPoints = $this->calculateWeeklyPointsForGroupedEntry($entry);
 
@@ -365,9 +366,9 @@ $groupedInProgressEntries = $this->groupEntriesByItemAndOwner($inProgressEntries
 
 foreach ($groupedInProgressEntries as $entry) {
     // Calculate other formulas normally
-    $calculations = $this->calculator->calculateAllFormulas($entry);
-    $exportItemType = $this->calculator->getExportItemType($entry);
-    
+    $isInProgress = empty($entry->actual_release_date);
+    $calculations = $this->calculator->calculateAllFormulas($entry, $isInProgress);
+
     // Calculate weekly points correctly for grouped entry
     $weeklyPoints = $this->calculateWeeklyPointsForGroupedEntry($entry);
 
@@ -516,7 +517,7 @@ foreach ($groupedInProgressEntries as $entry) {
 
         // Apply item type colors to ALL data rows (both completed and in-progress)
         $this->applyItemTypeColors($sheet);
-        
+
         // Then apply section colors (these will override item type colors for section headers)
         $this->styleInProgressSection($sheet);
         $this->styleMemberWiseSection($sheet);
@@ -536,22 +537,22 @@ foreach ($groupedInProgressEntries as $entry) {
 private function applyItemTypeColors(Worksheet $sheet)
 {
     $highestRow = $sheet->getHighestRow();
-    
+
     // Start from row 8 (after headers) and go through all data rows
     for ($row = 8; $row <= $highestRow; $row++) {
         $itemTypeCell = $sheet->getCell('D' . $row); // Column D contains ITEM TYPE
         $itemType = $itemTypeCell->getValue();
-        
+
         // Skip empty rows and section header rows
-        if (empty($itemType) || 
-            $itemType === 'In progress' || 
+        if (empty($itemType) ||
+            $itemType === 'In progress' ||
             $itemType === 'Member-wise Calculation' ||
             $itemType === 'Resource') {
             continue;
         }
-        
+
         $color = $this->getRowColor($itemType);
-        
+
        if ($color) {
     $sheet->getStyle('D' . $row)->applyFromArray([
         'fill' => [
@@ -566,7 +567,7 @@ private function applyItemTypeColors(Worksheet $sheet)
 private function getRowColor($itemType): ?string
 {
     $type = strtoupper(trim($itemType ?? ''));
-    
+
    switch ($type) {
     case 'BUG':
         return 'FFFF9999'; // bright pastel red
@@ -595,7 +596,7 @@ private function getRowColor($itemType): ?string
 private function styleInProgressSection(Worksheet $sheet)
 {
     $highestRow = $sheet->getHighestRow();
-    
+
     // Find the "In progress" row
     for ($row = 1; $row <= $highestRow; $row++) {
         $cellValue = $sheet->getCell('A' . $row)->getValue();
@@ -618,7 +619,7 @@ private function styleInProgressSection(Worksheet $sheet)
 private function styleMemberWiseSection(Worksheet $sheet)
 {
     $highestRow = $sheet->getHighestRow();
-    
+
     // Find the "Member-wise Calculation" row
     for ($row = 1; $row <= $highestRow; $row++) {
         $cellValue = $sheet->getCell('A' . $row)->getValue();
@@ -658,7 +659,7 @@ private function styleMemberWiseSection(Worksheet $sheet)
                     'borders' => ['top' => ['borderStyle' => Border::BORDER_DOUBLE]]
                 ]);
             }
-            
+
             break;
         }
     }

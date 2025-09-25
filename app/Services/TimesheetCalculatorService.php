@@ -7,19 +7,31 @@ use Illuminate\Support\Collection;
 
 class TimesheetCalculatorService
 {
-    public function calculateAllFormulas($entry): array
-    {
+public function calculateAllFormulas($entry, bool $isInProgress = false): array
+{
+    if ($isInProgress) {
         return [
-            'lead_time' => $this->calculateLeadTime($entry),
-            'cycle_time' => $this->calculateCycleTime($entry),
+            'lead_time' => null,
+            'cycle_time' => null,
             'defects_density' => $this->calculateDefectsDensity($entry),
             'weekly_points' => $this->calculateWeeklyPoints(collect([$entry])),
             'story_point_accuracy' => $this->calculateStoryPointAccuracy(collect([$entry])),
-            'release_delay' => $this->calculateReleaseDelay($entry)
+            'release_delay' => null,
         ];
     }
 
-   /**
+    return [
+        'lead_time' => $this->calculateLeadTime($entry),
+        'cycle_time' => $this->calculateCycleTime($entry),
+        'defects_density' => $this->calculateDefectsDensity($entry),
+        'weekly_points' => $this->calculateWeeklyPoints(collect([$entry])),
+        'story_point_accuracy' => $this->calculateStoryPointAccuracy(collect([$entry])),
+        'release_delay' => $this->calculateReleaseDelay($entry)
+    ];
+}
+
+
+    /**
      * Lead Time = NETWORKDAYS.INTL(Requested Date, Actual Release Date)
      * Equivalent to Excel's NETWORKDAYS.INTL function
      */
@@ -51,7 +63,7 @@ class TimesheetCalculatorService
         return $this->networkDays($startDate, $releaseDate);
     }
 
-     /**
+    /**
      * Equivalent to Excel's NETWORKDAYS.INTL function
      * Calculates business days between two dates (excluding weekends)
      * This matches Excel's behavior exactly
@@ -70,7 +82,7 @@ class TimesheetCalculatorService
 
         // Use Carbon's diffInWeekdays which excludes weekends
         // Add 1 to include the start date like Excel does
-    return $startDate->diffInWeekdays($endDate) + 1;
+        return $startDate->diffInWeekdays($endDate) + 1;
     }
 
 
@@ -78,24 +90,49 @@ class TimesheetCalculatorService
     /**
      * Defects Density = 1 if item_type is BUG, 0 otherwise
      */
-   /**
- * Defects Density = 1 if item_type is Bug/Defect/Hotfix, 0 for Planned/New Request/Off Hour
- */
-private function calculateDefectsDensity($entry): float
-{
-    $reportedBy = strtolower($entry->reported_by ?? '');
-    $itemType   = strtolower($entry->item_type ?? '');
-    $logType    = strtolower($entry->log_type ?? ''); // to handle offhour by log_type
+    /**
+     * Defects Density = 1 if item_type is Bug/Defect/Hotfix, 0 for Planned/New Request/Off Hour
+     */
+    private function calculateDefectsDensity($entry): float
+    {
+        $reportedBy = strtolower($entry->reported_by ?? '');
+        $itemType   = strtolower($entry->item_type ?? '');
+        $logType    = strtolower($entry->log_type ?? ''); // to handle offhour by log_type
 
-    $isPlanned = strpos($reportedBy, 'planned') !== false;
+        $isPlanned = strpos($reportedBy, 'planned') !== false;
 
-    // If reported by is planned
-    if ($isPlanned) {
-        // story or task → Planned = 0
-        if (strpos($itemType, 'story') !== false || strpos($itemType, 'task') !== false) {
+        // If reported by is planned
+        if ($isPlanned) {
+            // story or task → Planned = 0
+            if (strpos($itemType, 'story') !== false || strpos($itemType, 'task') !== false) {
+                return 0;
+            }
+
+            // bug → Bug = 1
+            if (strpos($itemType, 'bug') !== false) {
+                return 1;
+            }
+
+            // defect → Defect = 1
+            if (strpos($itemType, 'defect') !== false) {
+                return 1;
+            }
+
+            // hotfix → Hotfix = 1
+            if (strpos($itemType, 'hotfix') !== false) {
+                return 1;
+            }
+
+            // offhour by item_type or log_type → Off Hour = 0
+            if (strpos($itemType, 'offhour') !== false || strpos($logType, 'offhour') !== false) {
+                return 0;
+            }
+
+            // fallback = 0
             return 0;
         }
 
+        // If reported by is NOT planned
         // bug → Bug = 1
         if (strpos($itemType, 'bug') !== false) {
             return 1;
@@ -111,8 +148,8 @@ private function calculateDefectsDensity($entry): float
             return 1;
         }
 
-        // offhour by item_type or log_type → Off Hour = 0
-        if (strpos($itemType, 'offhour') !== false || strpos($logType, 'offhour') !== false) {
+        // story or task → New Request = 0
+        if (strpos($itemType, 'story') !== false || strpos($itemType, 'task') !== false) {
             return 0;
         }
 
@@ -120,61 +157,36 @@ private function calculateDefectsDensity($entry): float
         return 0;
     }
 
-    // If reported by is NOT planned
-    // bug → Bug = 1
-    if (strpos($itemType, 'bug') !== false) {
-        return 1;
+    private function calculateWeeklyPoints(Collection $entries): array
+    {
+        // Group by item_id and log_owner combination
+        $grouped = $entries->groupBy(function ($entry) {
+            return $entry->item_id . '|' . $entry->log_owner;
+        });
+
+        $weeklyPoints = [];
+
+        foreach ($grouped as $key => $itemEntries) {
+            [$itemId, $owner] = explode('|', $key);
+
+            // Sum all log hours for this item_id + log_owner combination
+            $totalHours = $itemEntries->sum('log_hours_decimal');
+
+            $totalMinutes = $totalHours * 60;
+
+            // Convert minutes to points (divide by 240)
+            $points = $totalMinutes / 240;
+
+            $weeklyPoints[] = [
+                'item_id' => $itemId,
+                'log_owner' => $owner,
+                'total_hours' => $totalHours, // Added for debugging
+                'weekly_points' => $points,
+            ];
+        }
+
+        return $weeklyPoints;
     }
-
-    // defect → Defect = 1
-    if (strpos($itemType, 'defect') !== false) {
-        return 1;
-    }
-
-    // hotfix → Hotfix = 1
-    if (strpos($itemType, 'hotfix') !== false) {
-        return 1;
-    }
-
-    // story or task → New Request = 0
-    if (strpos($itemType, 'story') !== false || strpos($itemType, 'task') !== false) {
-        return 0;
-    }
-
-    // fallback = 0
-    return 0;
-}
-
-   private function calculateWeeklyPoints(Collection $entries): array
-{
-    // Group by item_id and log_owner combination
-    $grouped = $entries->groupBy(function ($entry) {
-        return $entry->item_id . '|' . $entry->log_owner;
-    });
-    
-    $weeklyPoints = [];
-    
-    foreach ($grouped as $key => $itemEntries) {
-        [$itemId, $owner] = explode('|', $key);
-        
-        // Sum all log hours for this item_id + log_owner combination
-        $totalHours = $itemEntries->sum('log_hours_decimal'); 
-
-        $totalMinutes = $totalHours * 60;
-        
-        // Convert minutes to points (divide by 240)
-        $points = $totalMinutes / 240;
-        
-        $weeklyPoints[] = [
-            'item_id' => $itemId,
-            'log_owner' => $owner,
-            'total_hours' => $totalHours, // Added for debugging
-            'weekly_points' => $points,
-        ];
-    }
-    
-    return $weeklyPoints;
-}
 
     //  * Story Point Accuracy = (Estimated Points / Actual Points) * 100
     //  * If estimated is 0 or actual is 0, return 0
@@ -194,7 +206,7 @@ private function calculateDefectsDensity($entry): float
                 $totalAccuracy += $accuracy;
                 $count++;
             }
-        } 
+        }
 
         return $count > 0 ? $totalAccuracy / $count : 0;
     }
@@ -384,73 +396,68 @@ private function calculateDefectsDensity($entry): float
         return $entry->log_hours_decimal ?? 0;
     }
 
-   public function getExportItemType($entry): string
+  public function getExportItemType($entry): string
 {
     $reportedBy = strtolower($entry->reported_by ?? '');
     $itemType   = strtolower($entry->item_type ?? '');
-    $logType    = strtolower($entry->log_type ?? ''); // to handle offhour by log_type
+    $logType    = strtolower($entry->log_type ?? ''); // Convert log_type to lowercase for consistent comparison
 
     $isPlanned = strpos($reportedBy, 'planned') !== false;
 
     // If reported by is planned
     if ($isPlanned) {
-        // story or task → Planned
+        // Check log_type first for off hour (case-insensitive)
+        if (strpos($logType, 'off hour log type') !== false) {
+            return 'Off Hour';
+        }
+
+        // Then check item_type for planned category
         if (strpos($itemType, 'story') !== false || strpos($itemType, 'task') !== false) {
             return 'Planned';
         }
 
-        // bug → Bug
         if (strpos($itemType, 'bug') !== false) {
             return 'Bug';
         }
 
-        // defect → Defect
         if (strpos($itemType, 'defect') !== false) {
             return 'Defect';
         }
 
-        // hotfix → Hotfix
         if (strpos($itemType, 'hotfix') !== false) {
             return 'Hotfix';
         }
 
-        // offhour by item_type or log_type → Off Hour
-        if (strpos($itemType, 'offhour') !== false || strpos($logType, 'offhour') !== false) {
+        if (strpos($itemType, 'offhour') !== false) {
             return 'Off Hour';
         }
 
-        // fallback
         return 'Planned';
     }
 
     // If reported by is NOT planned
-    // bug → Bug
+    // Check log_type first for off hour (case-insensitive)
+    if (strpos($logType, 'off hour log type') !== false) {
+        return 'Off Hour';
+    }
+
+    // Then check item_type for non-planned category
     if (strpos($itemType, 'bug') !== false) {
         return 'Bug';
     }
 
-    // defect → Defect
     if (strpos($itemType, 'defect') !== false) {
         return 'Defect';
     }
 
-    // hotfix → Hotfix
     if (strpos($itemType, 'hotfix') !== false) {
         return 'Hotfix';
     }
 
-    // story or task → New Request
     if (strpos($itemType, 'story') !== false || strpos($itemType, 'task') !== false) {
         return 'New Request';
     }
 
-    // // internal team → Hot Fix
-    // if (strpos($reportedBy, 'internal team') !== false) {
-    //     return 'Hot Fix';
-    // }
-
-    // fallback — capitalize item_type
     return ucfirst($entry->item_type ?? '');
 }
-
 }
